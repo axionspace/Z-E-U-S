@@ -191,8 +191,9 @@ function checkHardened(txt) {
 }
 
 async function prepareSource(rl) {
-  // 1) Local file: the wizard sitting next to Source.js (repo clone), or an existing Source-hardened.js
-  for (const p of [join(__dirname, 'Source.js'), join(ROOT, 'Source-hardened.js')]) {
+  // 1) Local file: the wizard sitting next to Source.js, the fork layout (wizard/ folder
+  // inside the repo clone, Source.js at the root), or an existing Source-hardened.js
+  for (const p of [join(__dirname, 'Source.js'), join(ROOT, 'Source.js'), join(ROOT, 'Source-hardened.js')]) {
     if (!existsSync(p)) continue;
     const c = checkHardened(readFileSync(p, 'utf8'));
     if (c.valid) {
@@ -221,7 +222,7 @@ async function prepareSource(rl) {
   }
   fail(
     'Could not download the source from any mirror.',
-    'Try again with a VPN, or clone this repository and run the wizard from inside it (next to Source.js).'
+    'Try again with a VPN, or clone this repository and run wizard/wizard.mjs from inside it (it uses the repository Source.js directly).'
   );
 }
 
