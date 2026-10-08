@@ -140,6 +140,38 @@ First, log into your Cloudflare dashboard. Ensure you are using a verified email
 ---
 
 
+## 🧙 Deploy via Install Wizard
+
+This fork ships `wizard.mjs`, a zero-dependency interactive installer that deploys this repository's `Source.js` to your own Cloudflare account in one command (requires Node.js 18+, nothing else). It runs entirely on your machine — your API token never leaves your terminal.
+
+**Steps:**
+
+1. Install [Node.js 18+](https://nodejs.org) if you don't have it, then download the wizard:
+
+```bash
+curl -O https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard.mjs
+```
+
+2. Run it:
+
+```bash
+node wizard.mjs
+```
+
+3. The wizard prints a pre-filled Cloudflare **API-token creation link** — exactly the permission groups it needs, with a random token name. Open it in a browser, click `Continue to summary` → `Create Token`, then paste the token back into the wizard.
+4. It then creates (or reuses) the D1 database, uploads the worker, enables the `workers.dev` address, runs a health check, and can optionally attach a custom domain.
+
+**Extra flags:**
+
+- `node wizard.mjs --token-link` — print only the token-creation link (with a fresh random name).
+- `node wizard.mjs --prepare-only` — download and validate the panel source without contacting the Cloudflare API.
+
+> [!NOTE]
+> This fork's `Source.js` is a hardened build — see [docs/HARDENING.md](docs/HARDENING.md). If you ever run the in-panel core update, simply re-run the wizard afterwards to restore the hardened build.
+
+---
+
+
 # 🛡️ Build Your Own SOCKS5 Proxy (Zeus Relay)
 
 A dedicated bash script is provided to instantly deploy a private, secure SOCKS5 proxy on any Linux VPS (Ubuntu, Debian, CentOS, Rocky Linux). This is highly recommended for users who wish to create VIP residential proxies to route traffic through clean, dedicated IPs.
