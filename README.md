@@ -150,15 +150,19 @@ This fork ships a one-command installer that deploys this repository's `Source.j
 bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/install.sh)
 ```
 
-**Windows (CMD):**
+**Windows (PowerShell):**
 
-```cmd
-powershell -ExecutionPolicy Bypass -Command "Invoke-RestMethod https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard.mjs -OutFile $env:TEMP\wizard.mjs; node $env:TEMP\wizard.mjs"
+```powershell
+irm https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/install.ps1 | iex
 ```
 
-The installer prints a pre-filled Cloudflare **API-token creation link** — exactly the permission groups it needs, with a random token name. Open it in a browser, click `Continue to summary` → `Create Token`, then paste the token back into the wizard. It then creates (or reuses) the D1 database, uploads the worker, enables the `workers.dev` address, runs a health check, and can optionally attach a custom domain.
+If that command does not work, the same installer is also served from GitHub: `irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/install.ps1 | iex`.
 
-Flags can be appended to the install command: `--token-link` prints only the token-creation link (with a fresh random name), and `--prepare-only` downloads and validates the panel source without contacting the Cloudflare API.
+The installer creates a `zeus-wizard` folder in your current directory, downloads `wizard.mjs` into it, and runs it. The folder stays there — re-run the same command anytime to update it, or run `node zeus-wizard/wizard.mjs` (Windows: `node zeus-wizard\wizard.mjs`) for later runs.
+
+The wizard prints a pre-filled Cloudflare **API-token creation link** — exactly the permission groups it needs, with a random token name. Open it in a browser, click `Continue to summary` → `Create Token`, then paste the token back into the wizard. It then creates (or reuses) the D1 database, uploads the worker, enables the `workers.dev` address, runs a health check, and can optionally attach a custom domain.
+
+Flags can be appended on Linux / macOS / Git Bash: `--token-link` prints only the token-creation link (with a fresh random name), and `--prepare-only` downloads and validates the panel source without contacting the Cloudflare API. On Windows, pass flags to the wizard directly, e.g. `node zeus-wizard\wizard.mjs --token-link`.
 
 **Manual alternative** (two steps):
 

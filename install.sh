@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # One-command installer for the hardened Zeus panel.
-# Downloads wizard.mjs from this repository's mirrors and runs it with Node.js.
+# Creates a zeus-wizard folder in the current directory, downloads wizard.mjs
+# into it from this repository's mirrors, and runs it with Node.js.
 # Usage:
 #   bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/install.sh)
 #   bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/install.sh) --token-link
 # Requires Node.js 18+ (https://nodejs.org). Works on Linux, macOS, and Git Bash.
 set -eu
+
+INSTALL_DIR='zeus-wizard'
+WIZARD='wizard.mjs'
 
 SOURCES='
 https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard.mjs
@@ -21,9 +25,8 @@ command -v node >/dev/null 2>&1 \
 node -e 'if (Number(process.versions.node.split(".")[0]) < 18) process.exit(1)' \
   || fail "Node.js 18 or newer is required (found $(node --version)). Install it from https://nodejs.org."
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/zeus-wizard.XXXXXX")" || fail 'mktemp failed.'
-trap 'rm -rf "$WORK"' EXIT
-TMP="$WORK/wizard.mjs"
+mkdir -p "$INSTALL_DIR"
+TMP="$INSTALL_DIR/$WIZARD"
 
 download() {
   if command -v curl >/dev/null 2>&1; then
@@ -35,11 +38,12 @@ download() {
   fi
 }
 
+printf 'Downloading %s...\n' "$WIZARD"
 for SRC in $SOURCES; do
   if download "$SRC" && [ -s "$TMP" ]; then
-    set +e
-    node "$TMP" "$@"
-    exit $?
+    printf 'Starting the wizard (saved to %s/%s for future runs).\n\n' "$INSTALL_DIR" "$WIZARD"
+    cd "$INSTALL_DIR"
+    exec node "$WIZARD" "$@"
   fi
 done
 
