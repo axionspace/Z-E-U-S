@@ -123,9 +123,9 @@ First, log into your Cloudflare dashboard. Ensure you are using a verified email
 
 ## 🧙 Deploy via Install Wizard
 
-This fork ships a one-command installer that deploys this repository's `Source.js` to your own Cloudflare account. It runs entirely on your machine — your API token never leaves your terminal. Requires [Node.js 18+](https://nodejs.org) and nothing else.
+This fork ships a one-command installer that deploys this repository's `Source.js` to your own Cloudflare account. It runs entirely on your machine — your API token never leaves your terminal. There is nothing to install first: if Node.js 18+ is not present, the installer downloads a private copy of the Node runtime into the `zeus-wizard` folder it creates (checksum-verified, never installed system-wide — delete the folder to undo everything).
 
-**Linux / macOS / Git Bash:**
+**Linux / macOS / WSL / Git Bash:**
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.sh)
@@ -137,13 +137,26 @@ bash <(curl -Ls https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard
 irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.ps1 | iex
 ```
 
-If that command does not work, the same installers are also served via the jsDelivr CDN: `bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.sh)` (Linux / macOS / Git Bash) or `irm https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.ps1 | iex` (Windows).
+If a command does not work, the same installers are also served via CDNs: `bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.sh)` (Linux / macOS / Git Bash) or `irm https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.ps1 | iex` (Windows). Installers, wizard script and panel source are each fetched from six independent routes — `raw.githubusercontent.com` first, then `cdn.jsdelivr.net`, `fastly.jsdelivr.net`, `gcore.jsdelivr.net`, `raw.githack.com` and `cdn.jsdmirror.com` — so one filtered or failing route never blocks the install.
 
-The installer creates a `zeus-wizard` folder in your current directory, downloads `wizard.mjs` into it, and runs it. The folder stays there — re-run the same command anytime to update it, or run `node zeus-wizard/wizard.mjs` (Windows: `node zeus-wizard\wizard.mjs`) for later runs.
+**Every install carries its own build identity.** Before anything is uploaded, the wizard rebuilds the panel's encoded string table for you: a fresh XOR key, a new row order, and brand-new internal variable names, all derived from a random seed kept in your local profile. Your deployment is therefore not byte-identical to anybody else's copy of this panel — while the rewrite is verified row by row, so every decoded value, and with it every protocol, page and setting, is proven identical to the repository build before it is deployed. Use `--no-fingerprint` to deploy the shared build unchanged, or `--rotate` to mint a new identity.
 
-The wizard prints a pre-filled Cloudflare **API-token creation link** — exactly the permission groups it needs, with a random token name. Open it in a browser, click `Continue to summary` → `Create Token`, then paste the token back into the wizard. It then creates (or reuses) the D1 database, uploads the worker, enables the `workers.dev` address, runs a health check, and can optionally attach a custom domain.
+**Manual update with saved defaults.** `node zeus-wizard/wizard.mjs --update` (or the one-line installer with `--update`) re-deploys using the values stored in `zeus-wizard/profile.json` — same account, same worker, same database, same identity — and only asks you to confirm each default. It preserves the worker's existing bindings and compatibility date, re-attaches the same D1 database, reads the deployed script back to prove the bytes match, and takes a read-only row census before and after so you can see the data survived. Nothing in this flow deletes anything. Run it whenever the in-panel core update button replaced your own personalised build.
 
-Flags can be appended on Linux / macOS / Git Bash: `--token-link` prints only the token-creation link (with a fresh random name), and `--prepare-only` downloads and validates the panel source without contacting the Cloudflare API. On Windows, pass flags to the wizard directly, e.g. `node zeus-wizard\wizard.mjs --token-link`.
+The wizard prints a pre-filled Cloudflare **API-token creation link** — exactly the permission groups it needs, with a random token name. Open it in a browser, click `Continue to summary` → `Create Token`, then paste the token back into the wizard. It then creates (or reuses) the D1 database, uploads the worker, enables the `workers.dev` address, runs a health check, and can attach a custom domain — including a manual Zone ID route for tokens that cannot list zones.
+
+**Flags** (append them to the installer command on Linux / macOS / Git Bash, or pass them straight to the wizard on Windows, e.g. `node zeus-wizard\wizard.mjs --token-link`):
+
+| Flag | What it does |
+| --- | --- |
+| `--token-link` | prints only the token-creation link (fresh random name) |
+| `--prepare-only` | downloads and validates the panel source, no Cloudflare API calls |
+| `--personalize` | builds and verifies a private copy of the source, no Cloudflare API calls |
+| `--update` | manual update with the saved defaults and the same build identity |
+| `--rotate` | gives this panel a brand-new build identity |
+| `--no-fingerprint` | deploys the shared repository build unchanged |
+
+Environment switches for automation: `ZEUS_CF_TOKEN` (read the API token from the environment instead of typing it), `ZEUS_NODE_BIN`, `ZEUS_NODE_VERSION`, `ZEUS_SKIP_AUTO_RUNTIME=1` (never download a runtime).
 
 **Manual alternative** (two steps):
 
@@ -153,7 +166,7 @@ node wizard.mjs
 ```
 
 > [!NOTE]
-> This fork's `Source.js` is a hardened build — see [docs/HARDENING.md](docs/HARDENING.md). If you ever run the in-panel core update, simply re-run the installer afterwards to restore the hardened build.
+> This fork's `Source.js` is a hardened build — see [docs/HARDENING.md](docs/HARDENING.md). If you ever run the in-panel core update, re-run the installer with `--update` to restore your own personalised build.
 
 ---
 
