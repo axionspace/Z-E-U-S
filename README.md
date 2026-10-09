@@ -113,24 +113,7 @@
 First, log into your Cloudflare dashboard. Ensure you are using a verified email address, then proceed with the deployment method below.
 </div>
 
-<br>
-
-<a href="https://t.me/ZEUS_PANEL_BOT" target="_blank">
-<img src="https://img.shields.io/badge/Zeus_Telegram_Bot-Start_Bot-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Zeus Telegram Bot" height="40">
-</a>
-
 </div>
-
-<br>
-
-## 🤖  Deploy via Telegram Bot 
-
-1. 🌐 Access the **[ZEUS Telegram Bot](https://t.me/ZEUS_PANEL_BOT)** and click `Start`.
-2. 👤 From the main menu, click on **"➕ Register Cloudflare Account"**.
-3. 🔗 Click the inline button **"🔑 Get Cloudflare Token"** to be redirected to your Cloudflare account.
-4. 🟦 Scroll to the bottom of the Cloudflare page, click the blue `Continue to summary` button, and then click `Create Token`.
-5. 🔑 Copy the generated token and **send it directly in the bot chat**.
-6. ⚡️ Once the token is verified, return to the main menu, click **"🚀 Build New Panel"**, and select your account. Your D1 database and panel will be automatically deployed.
 
 ---
 
@@ -259,3 +242,4 @@ This panel was originally conceptualized and authored by Arad and Morgan. The cu
 
 * **Original Authors:** The baseline concept and initial framework belong to [AG-Morgan](https://github.com/AG-Morgan) and [aradava](https://github.com/aradava).
 * **Current Maintainer:** The system upgrades, advanced network capabilities, UI redesign, and automated deployment infrastructure have been developed and maintained by [PANEL_ZEUS](https://t.me/PANEL_ZEUS).
+* **Install wizard:** The install wizard in this fork is inspired by [BPB-Wizard](https://github.com/bia-pain-bache/BPB-Wizard).
