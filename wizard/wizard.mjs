@@ -580,7 +580,8 @@ async function deployedBytes(accountId, name) {
   if (!bm) return { ok: true, bytes: buf };
   const parts = buf.toString('binary').split('--' + bm[1]);
   for (const p of parts) {
-    if (!/filename="worker\.js"/i.test(p.slice(0, 1500))) continue;
+    // Cloudflare labels the script part name="worker.js" (no filename attribute)
+    if (!/name="worker\.js"/i.test(p.slice(0, 1200))) continue;
     const i = p.indexOf('\r\n\r\n');
     if (i === -1) continue;
     return { ok: true, bytes: Buffer.from(p.slice(i + 4).replace(/\r\n$/, ''), 'binary') };
