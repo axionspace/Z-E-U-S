@@ -562,6 +562,16 @@ function sameCensus(a, b) {
   return ka.every((k) => a[k] === b[k]);
 }
 
+// Does the worker already exist? The single-script endpoint answers with the script
+// body (multipart), not JSON, so the JSON script list is used instead — an existence
+// check that silently failed would skip the overwrite confirmation.
+async function workerExists(accountId, name) {
+  const list = await cf(`/accounts/${accountId}/workers/scripts?per_page=100`);
+  if (!list.ok) return { ok: false, known: false, errors: list.errors };
+  const found = (list.data.result || []).find((s) => s && s.id === name);
+  return { ok: true, known: !!found, script: found || null };
+}
+
 // Read the script back from Cloudflare so the deployed bytes can be compared with the
 // build that was just produced (the multipart endpoint returns worker.js verbatim).
 async function deployedBytes(accountId, name) {
@@ -612,7 +622,11 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   const up = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'PUT', body: form });
   if (!up.ok) fail('Worker upload failed (' + up.errors + ')', up.status === 413 ? 'Script is too large — build a different source version.' : 'Check Workers Scripts/Edit access in the token.');
   ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ')');
-  const back = await deployedBytes(accountId, workerName);
+  let back = await deployedBytes(accountId, workerName);
+  for (let t = 0; !back.ok && t < 3; t++) {
+    await new Promise((r) => setTimeout(r, 4000));
+    back = await deployedBytes(accountId, workerName);
+  }
   if (back.ok && back.bytes) {
     const a = sha256hex(back.bytes), b = sha256hex(bytes);
     if (a === b) ok('Read-back matches: the deployed script is byte-identical to this build (' + back.bytes.length + 'B, sha256 ' + a.slice(0, 12) + '…)');
@@ -757,8 +771,8 @@ async function main() {
 
   // ---------- [8/10] upload
   nextStep('Upload worker');
-  const exists = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`);
-  if (exists.ok) {
+  const exists = await workerExists(accountId, workerName);
+  if (exists.known) {
     const overwrite = await ask(rl, `Worker "${workerName}" already exists; overwrite it? (y/n)`, 'y');
     if (overwrite.toLowerCase() !== 'y') fail('Cancelled by user.');
     else console.log('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
@@ -934,9 +948,10 @@ async function updateMain() {
   }
   const workerName = (await ask(rl, 'Worker name', profile.workerName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.');
-  const current = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`);
-  if (current.ok) ok('Existing worker found: ' + workerName);
-  else warn('Worker "' + workerName + '" not found (' + current.errors + ') — this update will create it.');
+  const current = await workerExists(accountId, workerName);
+  if (!current.ok) warn('Could not read the account script list (' + current.errors + ') — continuing.');
+  if (current.known) ok('Existing worker found: ' + workerName);
+  else warn('Worker "' + workerName + '" is not in this account — this update will create it.');
 
   // ---------- [3/6] database
   nextStep('Re-attach the existing database');
@@ -1070,7 +1085,7 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, deployedBytes, d1Snapshot, sameCensus, loadProfile, saveProfile, makeTokenUrl, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, loadProfile, saveProfile, makeTokenUrl, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE };
 
 if (looksImported()) {
   // module import: helpers only, no prompts, no network
