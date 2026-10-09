@@ -2,7 +2,7 @@
 # Creates a zeus-wizard folder in the current directory, downloads wizard.mjs
 # into it from this repository's mirrors, and runs it with Node.js.
 # Usage:
-#   irm https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.ps1 | iex
 # Requires Node.js 18+ (https://nodejs.org).
 $ErrorActionPreference = "Stop"
 
@@ -32,10 +32,10 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $WizardPath = Join-Path $InstallDir $Wizard
 
 $Mirrors = @(
+    "https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/wizard.mjs",
     "https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/wizard.mjs",
     "https://fastly.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/wizard.mjs",
-    "https://gcore.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/wizard.mjs",
-    "https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/wizard.mjs"
+    "https://gcore.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/wizard.mjs"
 )
 
 Write-Host ""

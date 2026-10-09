@@ -23,13 +23,14 @@ import { Writable } from 'node:stream';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 const API = 'https://api.cloudflare.com/client/v4';
-// Mirrors of the hardened source served from this repository; jsdelivr is usually
-// reachable from Iran without a VPN.
+// Mirrors of the hardened source served from this repository; raw.githubusercontent.com
+// is the canonical source and is tried first, with the jsdelivr CDN mirrors as
+// fallbacks for networks where raw is filtered.
 const FORK_SOURCES = [
+  'https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/Source.js',
   'https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/Source.js',
   'https://fastly.jsdelivr.net/gh/axionspace/Z-E-U-S@main/Source.js',
   'https://gcore.jsdelivr.net/gh/axionspace/Z-E-U-S@main/Source.js',
-  'https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/Source.js',
 ];
 // Exactly the permissions the panel needs (Workers Scripts, KV, D1, Subdomain, ...)
 const PERM_GROUPS = [
@@ -203,7 +204,7 @@ async function prepareSource(rl) {
     warn(`File ${p} is not the hardened build (${c.hits} suspect lines or invalid structure) — will download from the repository instead.`);
   }
 
-  // 2) Download from this repository (several mirrors; jsdelivr usually works from Iran without a VPN)
+  // 2) Download from this repository (raw first as the canonical source; jsdelivr CDN mirrors as fallback)
   console.log('  ⏳ Downloading the hardened source from axionspace/Z-E-U-S ...');
   for (const url of FORK_SOURCES) {
     try {

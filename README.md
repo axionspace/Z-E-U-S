@@ -128,16 +128,16 @@ This fork ships a one-command installer that deploys this repository's `Source.j
 **Linux / macOS / Git Bash:**
 
 ```bash
-bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.sh)
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.ps1 | iex
+irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.ps1 | iex
 ```
 
-If that command does not work, the same installer is also served from GitHub: `irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.ps1 | iex`.
+If that command does not work, the same installers are also served via the jsDelivr CDN: `bash <(curl -Ls https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.sh)` (Linux / macOS / Git Bash) or `irm https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/install.ps1 | iex` (Windows).
 
 The installer creates a `zeus-wizard` folder in your current directory, downloads `wizard.mjs` into it, and runs it. The folder stays there — re-run the same command anytime to update it, or run `node zeus-wizard/wizard.mjs` (Windows: `node zeus-wizard\wizard.mjs`) for later runs.
 
@@ -148,7 +148,7 @@ Flags can be appended on Linux / macOS / Git Bash: `--token-link` prints only th
 **Manual alternative** (two steps):
 
 ```bash
-curl -O https://cdn.jsdelivr.net/gh/axionspace/Z-E-U-S@main/wizard/wizard.mjs
+curl -O https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/wizard.mjs
 node wizard.mjs
 ```
 
