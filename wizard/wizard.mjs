@@ -530,18 +530,26 @@ function fingerprint(srcPath, seed) {
 const sha256hex = (b) => createHash('sha256').update(b).digest('hex');
 
 // Read-only census of the database so an update can prove nothing was lost.
+// The D1 query endpoint answers with an ARRAY of per-statement results
+// ({ result: [ { results: [...], meta: {...} } ] }); the flat shape is handled too,
+// because reading it wrong would silently skip the proof.
 async function d1Snapshot(accountId, dbId) {
   const q = async (sql) => {
     const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql } });
     if (!r.ok) return null;
     const res = r.data && r.data.result;
-    return res && (res.rows || res.results) ? (res.rows || res.results) : null;
+    if (Array.isArray(res)) {
+      const first = res[0] || {};
+      return first.results || first.rows || null;
+    }
+    return (res && (res.rows || res.results)) || null;
   };
   const tables = await q("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
   if (!tables) return null;
   const census = {};
   for (const row of tables) {
-    const c = await q('SELECT COUNT(*) AS n FROM "' + String(row.name).replace(/"/g, '') + '"');
+    if (!row || typeof row.name !== 'string') continue;
+    const c = await q('SELECT COUNT(*) AS n FROM "' + row.name.replace(/"/g, '') + '"');
     census[row.name] = c && c.length ? Number(c[0].n) : 0;
   }
   return census;
@@ -701,7 +709,7 @@ async function main() {
 
   // ---------- [5/10] D1
   nextStep('Create D1 database');
-  const dbName = workerName + '-db';
+  let dbName = workerName + '-db';
   let dbId = '';
   const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
   const existing = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
@@ -710,9 +718,28 @@ async function main() {
     ok(`Using existing database: ${dbName} (${dbId.slice(0, 8)}...)`);
   } else {
     const created = await cf(`/accounts/${accountId}/d1/database`, { method: 'POST', body: { name: dbName } });
-    if (!created.ok) fail('D1 database creation failed (' + created.errors + ')', 'Make sure the token has D1/Edit access and your account has D1 (the free plan includes it).');
-    dbId = created.data.result.uuid;
-    ok(`Database created: ${dbName}`);
+    if (!created.ok) {
+      // Accounts hit a hard cap on databases (CF error 7406) after repeated installs;
+      // reusing an existing database is the way through that, never deleting anything.
+      if (!/7406|limit/i.test(created.errors)) {
+        fail('D1 database creation failed (' + created.errors + ')', 'Make sure the token has D1/Edit access and your account has D1 (the free plan includes it).');
+      }
+      warn('The account is at its D1 database limit (' + created.errors + ').');
+      const all = await cf(`/accounts/${accountId}/d1/database?per_page=50`);
+      const free = (all.ok && all.data.result) || [];
+      if (!free.length) fail('There is no database available to reuse.', 'Delete an old test database in the dashboard, then run this wizard again.');
+      console.log('  Existing databases in this account (nothing is deleted by this wizard):');
+      free.forEach((d, i) => console.log(`     ${i + 1}) ${d.name}`));
+      const pick = await ask(rl, 'Reuse which database number? (press Enter to stop here)', '');
+      const chosen = pick ? free[parseInt(pick, 10) - 1] : null;
+      if (!chosen) fail('No database chosen — the install stopped before any change.', 'Free a D1 slot in the dashboard and run the wizard again.');
+      dbId = chosen.uuid;
+      dbName = chosen.name;
+      warn(`Reusing ${dbName} (${String(dbId).slice(0, 8)}…) — anything it already holds stays as it is.`);
+    } else {
+      dbId = created.data.result.uuid;
+      ok(`Database created: ${dbName}`);
+    }
   }
 
   // ---------- [6/10] source
