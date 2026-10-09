@@ -36,7 +36,7 @@
 
 <table width="100%">
 <tr>
-<td width="50%" valign="middle" align="center">
+<td width="100%" valign="middle" align="center">
 <img src="https://raw.githubusercontent.com/panel-zeus/Z-E-U-S/refs/heads/main/photos/status.png" width="100%" alt="Zeus Panel Dark Mode" style="border-radius: 12px;">
 </td>
 </tr>
