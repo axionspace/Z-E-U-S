@@ -380,21 +380,43 @@ ${line}`);
   // ---------- optional custom domain
   const wantDomain = await ask(rl, 'Do you have a custom domain you want to attach? (y/n)', 'n');
   if (wantDomain.toLowerCase() === 'y') {
+    // Listing zones needs a token with Zone:Read — the wizard-created token does not include it,
+    // so fall back to the manual Zone ID route (attaching itself only needs Workers Scripts access).
     const zones = await cf('/zones?per_page=50');
-    if (!zones.ok || !zones.data.result?.length) {
-      warn('Could not list zones (' + (zones.errors || 'Zone:Read access required') + '). You can do this later from the dashboard.');
-    } else {
+    let zoneId = '';
+    let hostname = '';
+    if (zones.ok && zones.data.result?.length) {
       zones.data.result.forEach((z, i) => console.log(`     ${i + 1}) ${z.name}`));
       const zi = parseInt(await ask(rl, 'Domain number', '1'), 10);
       const zone = zones.data.result[zi - 1];
-      if (!zone) warn('Invalid selection; skipped.');
-      else {
-        const hostname = (await ask(rl, `Subdomain to use on ${zone.name} (e.g. panel)`, 'panel')) + '.' + zone.name;
-        const cd = await cf(`/accounts/${accountId}/workers/domains`, {
-          method: 'POST',
-          body: { environment: 'production', hostname, service: workerName, zone_id: zone.id },
-        });
-        if (!cd.ok) warn('Domain attach failed (' + cd.errors + ') — from the dashboard: Workers → Settings → Domains');
+      if (!zone) {
+        warn('Invalid selection; skipped.');
+      } else {
+        zoneId = zone.id;
+        hostname = (await ask(rl, `Subdomain to use on ${zone.name} (e.g. panel)`, 'panel')).trim().toLowerCase() + '.' + zone.name;
+      }
+    } else {
+      warn('Could not list zones (' + (zones.errors || 'Zone:Read access required') + ').');
+      console.log('  You can still attach it now: open the Cloudflare dashboard, open your domain,');
+      console.log('  and copy the "Zone ID" from the right sidebar of the Overview page.');
+      zoneId = (await ask(rl, 'Zone ID (press Enter to skip and do it later from the dashboard)', '')).trim();
+      if (zoneId && !/^[a-f0-9]{32}$/i.test(zoneId)) {
+        warn('Zone ID format is invalid (32 hex characters); skipped.');
+        zoneId = '';
+      }
+      if (zoneId) hostname = (await ask(rl, 'Full hostname for the panel (e.g. panel.mydomain.com)', '')).trim().toLowerCase();
+    }
+    if (zoneId && hostname) {
+      if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(hostname)) {
+        warn('Hostname looks invalid; skipped — you can attach it later from the dashboard (Worker → Settings → Domains).');
+      } else {
+        const domBody = { environment: 'production', hostname, service: workerName, zone_id: zoneId };
+        // API docs list PUT for attaching a domain; POST kept as a fallback for robustness.
+        let cd = await cf(`/accounts/${accountId}/workers/domains`, { method: 'PUT', body: domBody });
+        if (!cd.ok && (cd.status === 404 || cd.status === 405)) {
+          cd = await cf(`/accounts/${accountId}/workers/domains`, { method: 'POST', body: domBody });
+        }
+        if (!cd.ok) warn('Domain attach failed (' + cd.errors + ') — from the dashboard: Worker → Settings → Domains');
         else {
           ok(`Domain attached: https://${hostname}/panel`);
           console.log(`     (DNS record and certificate are created automatically; allow a few minutes)`);
