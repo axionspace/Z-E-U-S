@@ -562,6 +562,16 @@ function sameCensus(a, b) {
   return ka.every((k) => a[k] === b[k]);
 }
 
+// Occasionally a freshly created worker on an account starts answering error 1101 on
+// every route even though the very same bytes run fine under a different name — a
+// one-off deploy state on Cloudflare's side. Deleting the worker and deploying again
+// clears it, and the D1 data is never part of that state.
+function stuckWorkerHint() {
+  console.log('     If this worker keeps answering "error code: 1101" on every route while the');
+  console.log('     deploy itself reported success, delete the worker in the dashboard and run');
+  console.log('     this wizard again with the same name — the database and its data are kept.');
+}
+
 // Does the worker already exist? The single-script endpoint answers with the script
 // body (multipart), not JSON, so the JSON script list is used instead — an existence
 // check that silently failed would skip the overwrite confirmation.
@@ -804,13 +814,15 @@ async function main() {
 
   // ---------- [10/10] health check + summary
   nextStep('Final check & summary');
-  let reachable = false;
+  let reachable = false, stuck = false;
   try {
     const probe = await fetch(`https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/`, { signal: AbortSignal.timeout(12000) });
     reachable = probe.status >= 200 && probe.status < 500;
+    stuck = probe.status >= 500 && /error code: 1101/.test(await probe.text());
   } catch { reachable = false; }
   if (reachable) ok('Worker is reachable and responding ✔');
   else warn('Could not reach the workers.dev address from this system — normal inside Iran (workers.dev is filtered); the install itself completed fine.');
+  if (stuck) { warn('This address answered with Cloudflare error 1101 (a deploy hiccup, not the panel code).'); stuckWorkerHint(); }
 
   console.log(`
 ${line}
@@ -1010,11 +1022,13 @@ async function updateMain() {
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : `https://${workerName}.${subdomain}.workers.dev/panel`;
-  let reachable = false;
+  let reachable = false, stuck = false;
   try {
     const p = await fetch(url, { signal: AbortSignal.timeout(12000) });
     reachable = p.status >= 200 && p.status < 500;
+    stuck = p.status >= 500 && /error code: 1101/.test(await p.text());
   } catch { reachable = false; }
+  if (stuck) { warn('The address answered with Cloudflare error 1101 — the upload itself matched byte for byte.'); stuckWorkerHint(); }
   console.log(`
 ${line}
   🔄 Update complete — same database, same address, freshly rebuilt bytes:
@@ -1077,11 +1091,12 @@ if (typeof fetch !== 'function') {
 // installs never go quiet.
 function looksImported() {
   const a = process.argv[1];
-  if (!a) return false;
+  if (!a) return true; // loaded by an expression or stdin: stay silent, never prompt
+  const self = fileURLToPath(import.meta.url);
   try {
-    return realpathSync(resolve(a)) !== realpathSync(fileURLToPath(import.meta.url));
+    return realpathSync(resolve(a)) !== realpathSync(self);
   } catch {
-    return false;
+    return resolve(a) !== self;
   }
 }
 
