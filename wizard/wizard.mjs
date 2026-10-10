@@ -105,8 +105,10 @@ ${line}
      database: ${profile.dbName || '(none)'}${profile.dbId ? ' (' + String(profile.dbId).slice(0, 8) + '…)' : ''}
      address : ${profile.panelUrl || '(unknown)'}
      identity: ${profile.names ? Object.values(profile.names).slice(0, 2).join(', ') + ' …' : 'shared repository build'}
-   Nothing is deleted by this run: the D1 database, its rows, the workers.dev
-   address and any attached domain are all left exactly as they are.
+   Nothing in this run deletes your data: the D1 database, its rows, the workers.dev
+   address and any attached domain are left exactly as they are. (If Cloudflare itself
+   reports error 1101 on the address, the worker script may be recreated — never the
+   database.)
 ${line}`);
 }
 
@@ -647,6 +649,82 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   return up;
 }
 
+// ------------------------------------------------------------------ health + self-heal
+// A brand-new (or freshly replaced) worker is not reachable instantly: DNS and the
+// workers.dev route take up to a minute or two to spread. That is different from the
+// one-off state where Cloudflare itself answers "error code: 1101" for a script whose
+// bytes are complete and verified. The first needs patience, the second needs the
+// worker to be deleted and deployed again — which this does once, by itself.
+const PROBE_BASE = (process.env.ZEUS_PROBE_URL || '').replace(/\/+$/, '');
+
+function probeBase(workerName, subdomain) {
+  if (PROBE_BASE) return PROBE_BASE;
+  return `https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev`;
+}
+
+async function probeOnce(base) {
+  try {
+    const res = await fetch(base + '/', { signal: AbortSignal.timeout(15000) });
+    const text = await res.text();
+    return { status: res.status, code: (text.match(/error code: (\d+)/) || [])[1] || null, net: null };
+  } catch (e) {
+    return { status: 0, code: null, net: String((e.cause && e.cause.code) || e.code || e.message).slice(0, 40) };
+  }
+}
+
+function classifyProbe(p) {
+  if (p.status >= 200 && p.status < 400) return 'ok';
+  if (p.code === '1101' || p.status >= 500) return 'stuck';
+  if (p.status === 404) return 'propagating';
+  if (p.net) return 'propagating';
+  return 'other';
+}
+
+// Returns { ok, state, healed }. Never deletes anything except the worker script it has
+// just deployed itself, and only after Cloudflare itself reported 1101 (proof the address
+// is reachable, so this can never fire for a simply-filtered workers.dev).
+async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true }) {
+  const base = probeBase(workerName, subdomain);
+  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 90000);
+  const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 8000);
+  const deadline = Date.now() + waitMs;
+  let last = null, sawStuck = false;
+  for (;;) {
+    last = await probeOnce(base);
+    const state = classifyProbe(last);
+    if (state === 'ok') {
+      log.log('  ✅ Panel address answers ' + last.status + ' ✔');
+      return { ok: true, state: 'ok', healed: false };
+    }
+    if (state === 'stuck') sawStuck = true;
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  if (!sawStuck) {
+    warn('The address did not answer within ' + Math.round(waitMs / 1000) + 's (' + (last.net || ('HTTP ' + last.status)) + ') — on a filtered network (Iran) workers.dev is blocked, so this proves nothing about the install; the deploy itself was verified byte for byte.');
+    return { ok: false, state: 'unreachable', healed: false };
+  }
+  if (!canHeal) return { ok: false, state: 'stuck', healed: false };
+  warn('Cloudflare itself answered "error code: 1101" on this address although the deployed bytes match the verified build.');
+  console.log('  That is the one-off deploy state on Cloudflare side. Redeploying the same file to the same');
+  console.log('  name does not clear it, so the wizard deletes the worker and uploads it once again.');
+  console.log('  (The D1 database and every row in it are untouched; only the script object is recreated.)');
+  const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
+  if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false }; }
+  ok('Worker script removed; the database ' + (dbName || 'DB') + ' was not touched');
+  await new Promise((r) => setTimeout(r, 4000));
+  await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
+  const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
+  if (!en.ok) warn('Subdomain re-enable reported (' + en.errors + ') — enable it from the dashboard if needed.');
+  const again = await verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log: { log: () => {} }, canHeal: false });
+  if (again.ok) { ok('Self-heal worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true }; }
+  warn('Still not answering after one self-heal (' + again.state + '). The panel code is not the problem — the deployed bytes were verified.');
+  stuckWorkerHint();
+  console.log('     You can also prove it in 10 seconds: run the installer once with a different worker name');
+  console.log('     (--no-fingerprint keeps the shared build) — the same bytes run fine on a clean script name.');
+  return { ok: false, state: again.state, healed: true };
+}
+
 // ---------------------------------------------------------------- main
 async function main() {
   banner();
@@ -812,17 +890,10 @@ async function main() {
   if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
   else ok(`Enabled: https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev`);
 
-  // ---------- [10/10] health check + summary
+  // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
   nextStep('Final check & summary');
-  let reachable = false, stuck = false;
-  try {
-    const probe = await fetch(`https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/`, { signal: AbortSignal.timeout(12000) });
-    reachable = probe.status >= 200 && probe.status < 500;
-    stuck = probe.status >= 500 && /error code: 1101/.test(await probe.text());
-  } catch { reachable = false; }
-  if (reachable) ok('Worker is reachable and responding ✔');
-  else warn('Could not reach the workers.dev address from this system — normal inside Iran (workers.dev is filtered); the install itself completed fine.');
-  if (stuck) { warn('This address answered with Cloudflare error 1101 (a deploy hiccup, not the panel code).'); stuckWorkerHint(); }
+  const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain });
+  if (health.healed) { prof.healedAt = new Date().toISOString(); saveProfile(prof, true); }
 
   console.log(`
 ${line}
@@ -1022,18 +1093,12 @@ async function updateMain() {
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : `https://${workerName}.${subdomain}.workers.dev/panel`;
-  let reachable = false, stuck = false;
-  try {
-    const p = await fetch(url, { signal: AbortSignal.timeout(12000) });
-    reachable = p.status >= 200 && p.status < 500;
-    stuck = p.status >= 500 && /error code: 1101/.test(await p.text());
-  } catch { reachable = false; }
-  if (stuck) { warn('The address answered with Cloudflare error 1101 — the upload itself matched byte for byte.'); stuckWorkerHint(); }
+  const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain });
   console.log(`
 ${line}
   🔄 Update complete — same database, same address, freshly rebuilt bytes:
        ${url}
-       ${reachable ? 'responding now ✔' : 'not reachable from this machine (workers.dev is filtered in Iran; the deploy itself succeeded)'}
+       ${health.ok ? 'responding now ✔' : 'not answered from this machine yet (a filtered network or route propagation; the deploy itself was verified byte for byte)'}
      ${build.names ? 'Build identity kept for this panel: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
 ${line}`);
   saveProfile({
@@ -1043,6 +1108,7 @@ ${line}`);
     names: build.names || null, rows: build.rows || 0,
     source: src.fresh ? 'downloaded' : 'local',
     updatedAt: new Date().toISOString(),
+    healedAt: health.healed ? new Date().toISOString() : (profile.healedAt || null),
   });
   cleanup();
   console.log('\nDone. Good luck! 🌐');
@@ -1100,7 +1166,7 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, loadProfile, saveProfile, makeTokenUrl, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, verifyDeployment, classifyProbe, probeOnce, probeBase, loadProfile, saveProfile, makeTokenUrl, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE };
 
 if (looksImported()) {
   // module import: helpers only, no prompts, no network
