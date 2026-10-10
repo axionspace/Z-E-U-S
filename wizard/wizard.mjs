@@ -85,14 +85,17 @@ ${line}
    ⚡ Zeus Install Wizard — automated installer for the hardened panel
 ${line}
    This wizard will:
-     1. Generate a pre-configured API-token link (random name) and validate the token
-     2. Pick your account and a worker name (random suggestion)
-     3. Create a D1 database and bind it
-     4. Fetch the hardened source from this repository (zero identifiable keywords)
-     5. Re-key and rename it so this install carries its own build fingerprint
-     6. Upload the worker, enable the workers.dev address, save the install profile
-     7. (Optional) Attach a custom domain
-   Later on, "node wizard.mjs --update" re-deploys with those saved defaults.
+      [1/10]  Validate your Cloudflare API token (a pre-filled creation link is printed)
+      [2/10]  Pick the account to install into
+      [3/10]  Choose the worker name (a neutral random one is suggested)
+      [4/10]  Read your workers.dev subdomain
+      [5/10]  Create the D1 database, or reuse an existing one
+      [6/10]  Fetch the hardened source from this repository
+      [7/10]  Give this install its own build fingerprint (new key, order and names)
+      [8/10]  Upload the worker and verify the deployed bytes match
+      [9/10]  Enable the public workers.dev address
+     [10/10]  Check the address, then (optionally) attach a custom domain
+   Later on, "node wizard.mjs --update" re-deploys using the saved defaults.
 ${line}`);
 }
 function bannerUpdate(profile) {
@@ -135,8 +138,8 @@ async function ask(rl, q, def = '') {
   if (pipedLines) {
     const a = nextPiped();
     if (a === null) {
-      if (def) { console.log(prompt + def + '   (default — piped input ran out)'); return def; }
-      fail('Piped input ran out and no answer is left for: ' + q);
+      if (def) { console.log(prompt + def + '   (no more input — using the default)'); return def; }
+      fail('No answer was left in the non-interactive input, and this question has no default: ' + q, 'Run the wizard interactively, or pipe one answer per question in order.');
     }
     console.log(prompt + (a === '' && def ? `${def}   (default)` : a));
     return a || def;
@@ -150,7 +153,7 @@ async function askSecret(rl, q) {
   if (pipedLines) {
     let a = nextPiped();
     while (a === '') a = nextPiped(); // an empty token is meaningless; skip empty lines
-    if (a === null) fail('Piped input ran out and no value is left for "' + q + '".');
+    if (a === null) fail('No value was left in the non-interactive input for "' + q + '".', 'Set ZEUS_CF_TOKEN to pass the API token without typing it.');
     console.log(prompt + '••••••••   (read from standard input)');
     return a.trim();
   }
@@ -624,7 +627,7 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
     if (settings.data.result.compatibility_date) compat = settings.data.result.compatibility_date;
     if (keep.length) ok('Preserving ' + keep.length + ' existing worker binding(s)');
   } else if (settings.status === 404) {
-    console.log('     (new worker — nothing to preserve)');
+    console.log('     (no existing bindings to preserve)');
   } else {
     warn('Could not read current worker settings (' + settings.errors + ') — uploading with the standard D1 binding.');
   }
@@ -701,7 +704,10 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     await new Promise((r) => setTimeout(r, stepMs));
   }
   if (!sawStuck) {
-    warn('The address did not answer within ' + Math.round(waitMs / 1000) + 's (' + (last.net || ('HTTP ' + last.status)) + ') — on a filtered network (Iran) workers.dev is blocked, so this proves nothing about the install; the deploy itself was verified byte for byte.');
+    warn('The address did not answer within ' + Math.round(waitMs / 1000) + 's (' + (last.net || ('HTTP ' + last.status)) + ').');
+    console.log('  This does not mean the install failed: the uploaded bytes were verified against the');
+    console.log('  build that was produced here. On a filtered network workers.dev is simply unreachable.');
+    console.log('  Open the address from another network, or attach a custom domain at the last step.');
     return { ok: false, state: 'unreachable', healed: false };
   }
   if (!canHeal) return { ok: false, state: 'stuck', healed: false };
@@ -754,7 +760,7 @@ async function main() {
   nextStep('Validate API token');
   const tokenUrl = makeTokenUrl();
   console.log('  Open this link in your browser — every required permission is pre-configured');
-  console.log('  and the token name is already randomized:');
+  console.log('  and the token name is already randomised:');
   console.log(`     ${tokenUrl}`);
   console.log('  (Continue to summary → Create Token → copy the created token and paste it here)');
   const envTok = tokenFromEnv();
@@ -794,7 +800,7 @@ async function main() {
   nextStep('Worker name');
   const suggestedName = profile.workerName || 'web-' + randName(5);
   if (profile.workerName) console.log(`  An install profile exists in this folder — press Enter to reuse "${profile.workerName}", or type another name for a second panel.`);
-  else console.log('  Tip: a neutral random name lowers the ban risk — press Enter to accept the random suggestion.');
+  else console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
   const workerName = (await ask(rl, 'Worker name', suggestedName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.');
 
@@ -893,7 +899,12 @@ async function main() {
   // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
   nextStep('Final check & summary');
   const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain });
-  if (health.healed) { prof.healedAt = new Date().toISOString(); saveProfile(prof, true); }
+  if (health.healed) {
+    prof.healedAt = new Date().toISOString();
+    saveProfile(prof, true);
+    console.log('\n  Note: Cloudflare reported error 1101 for this address, so the wizard recreated the');
+    console.log('  worker script once with the identical verified bytes. The database was never touched.');
+  }
 
   console.log(`
 ${line}
