@@ -916,6 +916,9 @@ ${line}
      User subscription pattern:
        https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/sub/<username>
 
+  ⚠️  First thing to do: open the panel address above and set the admin password.
+     Until a password exists the panel answers its own API without one — that is the
+     author's first-run design, so do not leave a fresh install unclaimed.
 ${line}
   ⚠️  Four important notes:
      1. This deployment has its own build identity${build.names ? ' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)' : ''} — it is not
