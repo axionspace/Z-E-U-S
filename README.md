@@ -156,7 +156,7 @@ The wizard prints a pre-filled Cloudflare **API-token creation link** — exactl
 | `--rotate` | gives this panel a brand-new build identity |
 | `--no-fingerprint` | deploys the shared repository build unchanged |
 
-Environment switches for automation: `ZEUS_CF_TOKEN` (read the API token from the environment instead of typing it), `ZEUS_NODE_BIN`, `ZEUS_NODE_VERSION`, `ZEUS_SKIP_AUTO_RUNTIME=1` (never download a runtime).
+Environment switches for automation: `ZEUS_CF_TOKEN` (read the API token from the environment instead of typing it), `ZEUS_NODE_BIN`, `ZEUS_NODE_VERSION`, `ZEUS_SKIP_AUTO_RUNTIME=1` (never download a runtime), `ZEUS_PROBE_WAIT_MS` (how long the final address check waits for propagation, default 90000).
 
 **Manual alternative** (two steps):
 
@@ -166,11 +166,13 @@ node wizard.mjs
 ```
 
 > [!TIP]
-> Two account limits the wizard works around instead of failing: when the account is already at
-> its Cloudflare database cap, it lists the existing databases and offers to reuse one (nothing
-> is ever deleted); and when a freshly created worker only answers `error code: 1101` even though
-> the upload verified byte for byte, that is a one-off deploy state on Cloudflare's side — delete
-> the worker and run the same command again, the database and all of its data are kept.
+> Two account limits the wizard works around instead of failing: when the account is already at its
+> Cloudflare database cap, it lists the existing databases and offers to reuse one (nothing is ever
+> deleted). And a brand-new address needs up to a minute to spread across Cloudflare, so the wizard
+> polls it rather than reporting a false failure; if the address really keeps answering
+> `error code: 1101` although the upload verified byte for byte — a one-off deploy state on
+> Cloudflare's side — the wizard deletes and re-deploys the worker script once, by itself. The D1
+> database and every row in it are never part of that recovery.
 
 > [!NOTE]
 > This fork's `Source.js` is a hardened build — see [docs/HARDENING.md](docs/HARDENING.md). If you ever run the in-panel core update, re-run the installer with `--update` to restore your own personalised build.
