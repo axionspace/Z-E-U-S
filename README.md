@@ -174,6 +174,11 @@ node wizard.mjs
 > Cloudflare's side — the wizard deletes and re-deploys the worker script once, by itself. The D1
 > database and every row in it are never part of that recovery.
 
+> [!IMPORTANT]
+> Open the panel address as soon as the install finishes and set the admin password. Until a
+> password exists the panel answers its own API without a session — that is the upstream project's
+> first-run behaviour, identical in this hardened build, so do not leave a fresh deploy unclaimed.
+
 > [!NOTE]
 > This fork's `Source.js` is a hardened build — see [docs/HARDENING.md](docs/HARDENING.md). If you ever run the in-panel core update, re-run the installer with `--update` to restore your own personalised build.
 
