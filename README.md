@@ -165,6 +165,13 @@ curl -O https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/wizard.
 node wizard.mjs
 ```
 
+> [!TIP]
+> Two account limits the wizard works around instead of failing: when the account is already at
+> its Cloudflare database cap, it lists the existing databases and offers to reuse one (nothing
+> is ever deleted); and when a freshly created worker only answers `error code: 1101` even though
+> the upload verified byte for byte, that is a one-off deploy state on Cloudflare's side — delete
+> the worker and run the same command again, the database and all of its data are kept.
+
 > [!NOTE]
 > This fork's `Source.js` is a hardened build — see [docs/HARDENING.md](docs/HARDENING.md). If you ever run the in-panel core update, re-run the installer with `--update` to restore your own personalised build.
 
