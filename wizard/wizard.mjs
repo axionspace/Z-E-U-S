@@ -715,19 +715,17 @@ async function ensureD1Ready(accountId, dbId, dbName) {
   return true;
 }
 
-// Settle pause between a verified upload and switching the public address on. A fresh
-// script version needs a moment to register on every edge node; hammering the address
-// (or flipping routes) the same second the bytes land is the most avoidable trigger of
-// the stuck-1101 deploy state. One calm wait here beats a delete-and-redeploy later.
-// Brand-new workers get the long quiet period (nothing has ever served from that name);
-// re-uploads to an existing worker get the short one. ZEUS_SETTLE_MS overrides only the
-// actual wait (tests use it to stay fast); the message always states the intended period.
+// Short pause between a verified upload and switching the public address on: attaching
+// the route is not instant, and the first probe should not race it. Brand-new workers
+// (a route that never existed) get ~10s, re-uploads to an existing worker ~5s.
+// ZEUS_SETTLE_MS overrides only the actual wait (tests use it to stay fast); the message
+// always states the intended pause.
 async function settleDeploy(fresh) {
-  const ms = fresh ? 30000 : 12000;
+  const ms = fresh ? 10000 : 5000;
   const override = process.env.ZEUS_SETTLE_MS;
   const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : ms;
   if (!(wait > 0)) return;
-  console.log('     Letting the deploy settle across the edge (' + Math.round(ms / 1000) + 's' + (fresh ? ' quiet period for a brand-new worker' : '') + ') before switching the address on…');
+  console.log('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
   await new Promise((r) => setTimeout(r, wait));
 }
 
@@ -814,34 +812,40 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   if (!up.ok) fail('Worker upload failed (' + up.errors + ')', up.status === 413 ? 'Script is too large — build a different source version.' : 'Check Workers Scripts/Edit access in the token.');
   ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ' ' + flags.join('+') + ')');
   // Settings are eventually consistent after a PUT: poll until the API reports back the
-  // bindings, date and flags that were just sent. Deploying blind here used to leave
-  // workers behind with a missing D1 binding — every route then failed until someone
-  // re-ran the wizard by hand. A second PUT goes out ONLY when the settings are visible
-  // but wrong; rapid blind re-uploads risk confusing the edge into the very 1101 state
-  // this wizard otherwise has to heal afterwards.
+  // bindings, date and flags that were just sent — twice in a row, so a single flapping
+  // read can't fake a confirmation. Deploying blind here used to leave workers behind
+  // with a missing D1 binding, and every route then failed until someone re-ran the
+  // wizard by hand. A second PUT goes out ONLY when the settings are visible but wrong;
+  // rapid blind re-uploads risk confusing the edge into the very 1101 state this wizard
+  // otherwise has to heal afterwards.
+  const pollMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 4000);
   const matchSettings = (r) => {
     const d1 = (r.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
     const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (r.compatibility_flags || []).includes(f));
     return !!(d1 && d1.id === dbId && (r.compatibility_date || '') >= REQUIRED_COMPAT_DATE && flagsOk);
   };
-  let settled = null, seenMismatch = false;
-  for (let t = 0; t < 12; t++) {
-    const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
-    if (st.ok) {
-      if (matchSettings(st.data.result || {})) { settled = st.data.result; break; }
-      seenMismatch = true;
+  const awaitStableSettings = async (rounds) => {
+    let stable = 0, seenMismatch = false, last = null;
+    for (let t = 0; t < rounds; t++) {
+      const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+      if (st.ok && matchSettings(st.data.result || {})) {
+        stable++;
+        if (stable >= 2) return { settled: st.data.result, seenMismatch };
+        last = st.data.result;
+      } else {
+        stable = 0;
+        if (st.ok) seenMismatch = true;
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
     }
-    await new Promise((r) => setTimeout(r, 4000));
-  }
+    return { settled: null, seenMismatch, last };
+  };
+  let { settled, seenMismatch } = await awaitStableSettings(12);
   if (!settled && seenMismatch) {
     warn('Worker settings report different values than uploaded — re-applying the same metadata once to pin the D1 binding, date and flags.');
     up = await putOnce();
     if (!up.ok) fail('Worker upload failed (' + up.errors + ')', 'Check Workers Scripts/Edit access in the token.');
-    for (let t = 0; t < 8; t++) {
-      const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
-      if (st.ok && matchSettings(st.data.result || {})) { settled = st.data.result; break; }
-      await new Promise((r) => setTimeout(r, 4000));
-    }
+    ({ settled } = await awaitStableSettings(8));
     if (!settled) warn('Could not confirm the worker settings yet — continuing; the read-back check below still proves the bytes.');
     else ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
   } else if (settled) {
@@ -1034,6 +1038,9 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   // One clear line, so the owner understands exactly what happened and why:
   // Cloudflare hiccup on the fresh deploy (1101) → script recreated once, data untouched.
   console.log('  💬 Cloudflare answered 1101 on a fresh deploy — the worker script is recreated once from the same verified bytes; your database, rows, address and domains are never touched.');
+  const failedAt = new Date().toISOString();
+  console.log('  First failing probe (UTC): ' + failedAt);
+  console.log('  To read the exact exception behind a future 1101: dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs, around ' + failedAt.slice(0, 16).replace('T', ' ') + ' UTC.');
   const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
   if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false, rebuilt: null }; }
   ok('Worker script removed; the database ' + (dbName || 'DB') + ' was not touched');
@@ -1042,7 +1049,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   for (let t = 0; t < 8; t++) {
     const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
     if (!st.ok && st.status === 404) break;
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise((r) => setTimeout(r, stepMs));
   }
   await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
   const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
@@ -1050,6 +1057,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const again = await verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log: { log: () => {} }, canHeal: false });
   if (again.ok) { ok('Self-heal worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
   warn('Still not answering after one self-heal (' + again.state + '). The panel code is not the problem — the deployed bytes were verified.');
+  console.log('  (Failing since ' + failedAt + ' UTC — that timestamp plus Observability → Logs shows the exact exception.)');
   stuckWorkerHint();
   console.log('     You can also prove it in 10 seconds: run the installer once with a different worker name');
   console.log('     (--no-fingerprint keeps the shared build) — the same bytes run fine on a clean script name.');
@@ -1648,6 +1656,7 @@ async function doctorMain() {
   }
   const verdict = classifyDeployment(probes);
   console.log('\n  verdict: ' + verdict);
+  if (verdict !== 'ok') console.log('  Probed at (UTC): ' + new Date().toISOString() + ' — dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs around this time shows the exact exception.');
   if (verdict === 'ok') console.log('  ✅ The panel answers every route — nothing to fix. If a browser still shows an error, hard-refresh (Ctrl+Shift+R) or check your VPN.');
   else if (verdict === 'binding') console.log('  Next step: run `node wizard.mjs --update` and accept the saved database — the wizard re-attaches the D1 binding without deleting anything.');
   else if (verdict === 'integrity') console.log('  Next step: run `node wizard.mjs --update --rotate` — the panel needs a freshly rebuilt identity, and your data stays in place.');

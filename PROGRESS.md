@@ -735,3 +735,49 @@ Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
+
+---
+
+## 2026-10-11 — no more blind 30s: condition-based readiness + evidence on failure (owner pushback)
+
+### Owner's two demands, answered honestly
+1. **"30s hardcoded is excessive."** Agreed — replaced with waiting on conditions,
+   which is fast when healthy, plus a short honest cushion.
+2. **"Use tail to capture the exact exception."** Declined with reason, substituted:
+   an in-wizard Tail integration needs a websocket protocol plus token scopes that
+   cannot be verified without a live Cloudflare token — shipping it blind is exactly
+   how the last crash happened. Instead every failure now prints the precise UTC
+   timestamp plus the one dashboard click (Workers → Observability → Logs) that
+   shows the exception. If the owner can run `wrangler tail <worker>` (or open that
+   Logs view) during the next fresh install and paste one exception, the last
+   unknown becomes known.
+
+### Changes (`wizard/zeus-wizard.mjs`, deploy-time only)
+* **Stability-gated settings confirmation**: a settings read counts only toward two
+  *consecutive* matching reads — one flapping read can't fake a confirmation.
+  Poll interval reuses `ZEUS_PROBE_INTERVAL_MS` (4s live, fast in tests).
+* **Short route-attach pause**: fresh workers ~10s, re-uploads ~5s
+  (`settleDeploy(fresh)`; `ZEUS_SETTLE_MS` still overrides the actual wait).
+  Worst-case happy-path overhead is now ~10s + API polls, not 30s + polls.
+* **Evidence on every failure**: the stuck path prints `First failing probe (UTC):`
+  + timestamp and the Observability → Logs path before deleting; the honest-stop
+  repeats the timestamp; `--doctor` prints `Probed at (UTC):` + the same path on
+  any non-ok verdict.
+* `uploadWorker` returns `{ up, fresh }` (fresh = settings 404'd: name never
+  existed); install and update route it into the right pause, including updates
+  that end up creating the worker.
+
+### Tests
+* S1/S3/S6 assert the exact new pauses (10s fresh / 5s existing / 10s created);
+  S13 asserts the UTC timestamp + Observability pointer; S20b (new, 5 checks)
+  runs the doctor against a sick worker and asserts verdict + timestamp + pointer
+  while still read-only; S8 asserts the two-reads rule and the evidence lines.
+* `test-wizard-flows` **204/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+* Scenario matrix now explicitly covers fresh names (S1), overwriting a stale
+  1101 record (S21), and updates that keep vs create workers (S3/S4/S6) — the
+  three real-world cases the owner named. The one thing mocks cannot cover is
+  real edge timing; the timestamps exist so the next live 1101 arrives with
+  evidence instead of a mystery.
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`.

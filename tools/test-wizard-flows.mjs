@@ -260,8 +260,7 @@ try {
     check(r.out.includes('the panel answers its own API without one'), 'S1 explains why the password has to come first');
     check(!/[؀-ۿ]/.test(r.out), 'S1 the whole install output is English-only (no Persian/Arabic script)');
     check(r.out.includes('Database is ready'), 'S1 the D1 readiness gate ran before the upload');
-    check(r.out.includes('Letting the deploy settle'), 'S1 the settle pause ran between upload and address switch-on');
-    check(r.out.includes('(30s quiet period for a brand-new worker)'), 'S1 a fresh worker gets the long quiet period');
+    check(r.out.includes('Letting the route attach (~10s)'), 'S1 a fresh worker gets the route-attach pause');
     check(r.out.includes('Worker settings confirmed: D1 binding'), 'S1 the deployed settings were verified after the upload');
     const put = state.puts[0];
     check(!!put, 'S1 a worker script was uploaded');
@@ -329,7 +328,7 @@ try {
     check(r.out.includes('row census before: users=5, settings=12'), 'S3 read the database census first', r.out.match(/row census before.*/)?.[0]);
     check(r.out.includes('Database intact: 2 tables with identical row counts'), 'S3 proves the rows survived');
     check(r.out.includes('Update complete'), 'S3 finished');
-    check(r.out.includes('Letting the deploy settle across the edge (12s)'), 'S3 a re-upload to an existing worker gets the short quiet period');
+    check(r.out.includes('Letting the route attach (~5s)'), 'S3 a re-upload to an existing worker gets the short pause');
     const put = state.puts[0];
     check(!!put && put.name === 'panel-one', 'S3 uploaded to the saved worker', put && put.name);
     if (put) {
@@ -396,7 +395,7 @@ try {
     const r = await run(root, port, ['--update'], [TOKEN, '', '', 'gone-db']);
     check(!r.fatal && r.code === 0, 'S6 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('using the saved database id instead'), 'S6 reused the saved database');
-    check(r.out.includes('(30s quiet period for a brand-new worker)'), 'S6 an update that creates the worker gets the long quiet period');
+    check(r.out.includes('Letting the route attach (~10s)'), 'S6 an update that creates the worker gets the fresh-worker pause');
     const put = state.puts[0];
     check(!!put && put.metadata.bindings.find((b) => b.type === 'd1').id === DB_UUID, 'S6 D1 binding points at the saved database');
     check(state.requests.every((q) => q.method !== 'DELETE'), 'S6 no DELETE request issued');
@@ -501,6 +500,8 @@ try {
     check(state.deletes.length === 1, 'S13 tried the self-heal exactly once', JSON.stringify(state.deletes));
     check(state.puts.length === 2, 'S13 did not loop re-uploads', 'PUTs=' + state.puts.length);
     check(r.out.includes('Still not answering after one self-heal'), 'S13 tells the truth instead of pretending success');
+    check(/First failing probe \(UTC\): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(r.out), 'S13 stamps the failure with a UTC timestamp for the dashboard logs');
+    check(r.out.includes('Observability → Logs'), 'S13 points at the one dashboard click that shows the exact exception');
     check(r.out.includes('delete the worker in the dashboard and run'), 'S13 prints the remaining manual step');
     check(r.out.includes('Install complete'), 'S13 still completes the install (the deploy itself is verified)');
     server.close();
@@ -670,6 +671,23 @@ try {
     server.close();
     console.log('');
   }
+  {
+    // Same doctor, sick worker: the verdict must arrive with its evidence attached.
+    const { server, state, port } = await startMock({ dbs: [{ name: 'doc-db', uuid: DB_UUID }], probeMode: 'tripwire' });
+    state.scripts['doc-worker'] = {
+      bytes: Buffer.from(CANON),
+      metadata: { bindings: [{ type: 'd1', name: 'DB', id: DB_UUID }], compatibility_date: REQUIRED_COMPAT_DATE, compatibility_flags: [...REQUIRED_COMPAT_FLAGS] },
+    };
+    writeFileSync(profPath, JSON.stringify({ version: 1, seed: 'ab'.repeat(16), fingerprint: true, accountId: ACCOUNT_ID, workerName: 'doc-worker', dbName: 'doc-db', dbId: DB_UUID, subdomain: SUB, installedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }));
+    const r = await run(root, port, ['--doctor'], [TOKEN, '']);
+    check(!r.fatal && r.code === 0, 'S20b exit code 0 on a sick worker (got ' + r.code + ')', r.out && r.out.slice(-2000));
+    check(r.out.includes('verdict: integrity'), 'S20b the doctor names the integrity verdict');
+    check(/Probed at \(UTC\): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(r.out), 'S20b the verdict carries a UTC timestamp for the dashboard logs');
+    check(r.out.includes('Observability → Logs'), 'S20b the verdict points at the exception source');
+    check(state.puts.length === 0 && state.deletes.length === 0, 'S20b still read-only on a sick worker');
+    server.close();
+    console.log('');
+  }
 
   // ------------------------------------------------------------------ S21 stale 1101 record
   console.log('• S21 overwriting a worker that already 1101s is flagged up front');
@@ -708,6 +726,8 @@ try {
     check(typeof classifyDeployment === 'function', 'S8 classifyDeployment is exported and testable');
     check(wizTxt.includes('--doctor') && wizTxt.includes('function doctorMain('), 'S8 the read-only doctor mode exists');
     check(wizTxt.includes('function settleDeploy(') && wizTxt.includes('ZEUS_SETTLE_MS'), 'S8 the post-upload settle pause exists and is overridable');
+    check(wizTxt.includes('twice in a row'), 'S8 settings confirmation requires two agreeing reads (no single flapping read)');
+    check(wizTxt.includes('Observability → Logs'), 'S8 failures print a UTC timestamp plus the dashboard path to the exact exception');
     check(wizTxt.includes('already answers "error code: 1101" right now'), 'S8 the overwrite pre-flight warns about a stale 1101 record');
     const shTxt = readFileSync(join(PROJECT, 'install.sh'), 'utf8');
     const psTxt = readFileSync(join(PROJECT, 'install.ps1'), 'utf8');
