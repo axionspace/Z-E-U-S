@@ -654,3 +654,41 @@ one-liner (optionally with `ZEUS_CF_TOKEN` set).
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
+
+---
+
+## 2026-10-11 — preventing 1101 instead of only healing it (owner: "don't rebuild from scratch")
+
+### Clarification first
+The self-heal never rebuilt anything from scratch: identical verified bytes were
+re-uploaded and the D1 was never touched. Still, prevention beats cure — so this
+change cuts the triggers instead of polishing the recovery. Honest limit, stated
+plainly: the poisoned deploy state originates inside Cloudflare's infrastructure
+and no client code can forbid it outright; what the wizard can do is stop tripping
+it and stop reusing stale breakage.
+
+### Prevention added (`wizard/zeus-wizard.mjs`, deploy-time only, panel untouched)
+1. **Post-upload settle pause** (new exported `settleDeploy()`): after bytes and
+   settings verify, the wizard waits ~12s (`ZEUS_SETTLE_MS`, documented in `--help`)
+   before enabling the address and probing. Hitting routes the same second a fresh
+   script version lands is the most avoidable trigger of the stuck state; one calm
+   wait beats a delete-and-redeploy later. Runs in install and update.
+2. **Overwrite pre-flight**: when the chosen worker name already exists, the wizard
+   probes its live address once before asking. If it already answers 1101 (stale
+   record from an aborted run), it says so and recommends the overwrite — replacing
+   the record is the cure, and the final check confirms it.
+3. **Smarter settings settle**: the post-PUT poll (now ~45s) distinguishes
+   *visible-but-wrong* (targeted single metadata re-PUT) from *not-visible-yet*
+   (keep waiting, no blind second PUT). Rapid blind re-uploads risk confusing the
+   edge into the very state being avoided.
+4. **Subdomain enable retry**: one retry after 10s before warning, in install flow.
+
+### Tests
+* New S21 (6 checks): pre-seeded worker 1101ing on the edge → advisory shown before
+  the overwrite question → heal confirms → exactly one DELETE total.
+* S1 asserts the settle message; S8 asserts `settleDeploy`, `ZEUS_SETTLE_MS`, and the
+  pre-flight advisory; harness sets `ZEUS_SETTLE_MS=100` so the suite stays fast.
+* `test-wizard-flows` **193/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`.

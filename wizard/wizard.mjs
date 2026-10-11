@@ -715,6 +715,18 @@ async function ensureD1Ready(accountId, dbId, dbName) {
   return true;
 }
 
+// Settle pause between a verified upload and switching the public address on. A fresh
+// script version needs a moment to register on every edge node; hammering the address
+// (or flipping routes) the same second the bytes land is the most avoidable trigger of
+// the stuck-1101 deploy state. One calm wait here beats a delete-and-redeploy later.
+// Overridable for tests via ZEUS_SETTLE_MS (default 12000).
+async function settleDeploy() {
+  const ms = Number(process.env.ZEUS_SETTLE_MS || 12000);
+  if (!(ms > 0)) return;
+  console.log('     Letting the deploy settle across the edge (' + Math.round(ms / 1000) + 's) before switching the address on…');
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 // Occasionally a freshly created worker on an account starts answering error 1101 on
 // every route even though the very same bytes run fine under a different name — a
 // one-off deploy state on Cloudflare's side. Deleting the worker and deploying again
@@ -800,36 +812,38 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   // Settings are eventually consistent after a PUT: poll until the API reports back the
   // bindings, date and flags that were just sent. Deploying blind here used to leave
   // workers behind with a missing D1 binding — every route then failed until someone
-  // re-ran the wizard by hand.
-  let settled = null;
-  for (let t = 0; t < 8; t++) {
+  // re-ran the wizard by hand. A second PUT goes out ONLY when the settings are visible
+  // but wrong; rapid blind re-uploads risk confusing the edge into the very 1101 state
+  // this wizard otherwise has to heal afterwards.
+  const matchSettings = (r) => {
+    const d1 = (r.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
+    const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (r.compatibility_flags || []).includes(f));
+    return !!(d1 && d1.id === dbId && (r.compatibility_date || '') >= REQUIRED_COMPAT_DATE && flagsOk);
+  };
+  let settled = null, seenMismatch = false;
+  for (let t = 0; t < 12; t++) {
     const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
     if (st.ok) {
-      const r = st.data.result || {};
-      const d1 = (r.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
-      const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (r.compatibility_flags || []).includes(f));
-      if (d1 && d1.id === dbId && (r.compatibility_date || '') >= REQUIRED_COMPAT_DATE && flagsOk) { settled = r; break; }
+      if (matchSettings(st.data.result || {})) { settled = st.data.result; break; }
+      seenMismatch = true;
     }
     await new Promise((r) => setTimeout(r, 4000));
   }
-  if (!settled) {
-    warn('Worker settings have not settled yet — re-applying the same metadata once to pin the D1 binding, date and flags.');
+  if (!settled && seenMismatch) {
+    warn('Worker settings report different values than uploaded — re-applying the same metadata once to pin the D1 binding, date and flags.');
     up = await putOnce();
     if (!up.ok) fail('Worker upload failed (' + up.errors + ')', 'Check Workers Scripts/Edit access in the token.');
     for (let t = 0; t < 8; t++) {
       const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
-      if (st.ok) {
-        const r = st.data.result || {};
-        const d1 = (r.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
-        const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (r.compatibility_flags || []).includes(f));
-        if (d1 && d1.id === dbId && (r.compatibility_date || '') >= REQUIRED_COMPAT_DATE && flagsOk) { settled = r; break; }
-      }
+      if (st.ok && matchSettings(st.data.result || {})) { settled = st.data.result; break; }
       await new Promise((r) => setTimeout(r, 4000));
     }
     if (!settled) warn('Could not confirm the worker settings yet — continuing; the read-back check below still proves the bytes.');
     else ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
-  } else {
+  } else if (settled) {
     ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
+  } else {
+    warn('Could not confirm the worker settings yet — continuing; the read-back check below still proves the bytes.');
   }
   let back = await deployedBytes(accountId, workerName);
   for (let t = 0; !back.ok && t < 3; t++) {
@@ -1182,11 +1196,17 @@ async function main() {
   why('The built file is uploaded and immediately read back so the deployed bytes are proven identical.');
   const exists = await workerExists(accountId, workerName);
   if (exists.known) {
+    // Pre-flight: if this name already answers 1101 right now (stale record from an
+    // earlier aborted run), say so up front — replacing it with a fresh upload is the
+    // cure, and the health check at the end will confirm it worked.
+    const pre = await probeRoute(probeBase(workerName, subdomain), '/');
+    if (pre.code === '1101') warn('This worker address already answers "error code: 1101" right now — overwriting it with a fresh upload is the fix; the final check will confirm.');
     const overwrite = await ask(rl, `Worker "${workerName}" already exists; overwrite it? (y/n)`, 'y');
     if (overwrite.toLowerCase() !== 'y') fail('Cancelled by user.', 'Pick a different worker name if you do not want to replace it.');
     console.log('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
   }
   await uploadWorker(accountId, workerName, build.path, dbId, dbName);
+  await settleDeploy();
 
   const panelUrl = `https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/panel`;
   const prof = {
@@ -1205,9 +1225,16 @@ async function main() {
 
   // ---------- [9/10] enable workers.dev
   nextStep('Enable public address');
-  const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
+  let en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
     method: 'POST', body: { enabled: true, previews_enabled: false },
   });
+  if (!en.ok) {
+    warn('Subdomain enable reported (' + en.errors + ') — waiting 10s and retrying once before giving up.');
+    await new Promise((r) => setTimeout(r, 10000));
+    en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
+      method: 'POST', body: { enabled: true, previews_enabled: false },
+    });
+  }
   if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
   else ok('Enabled: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
 
@@ -1424,6 +1451,7 @@ async function updateMain() {
   // ---------- [5/6] upload
   nextStep('Upload the update');
   await uploadWorker(accountId, workerName, build.path, dbId, dbName);
+  await settleDeploy();
 
   // ---------- [6/6] prove the data is intact
   nextStep('Verify nothing was lost');
@@ -1513,7 +1541,7 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
 
 // Help, so a first-time owner knows what every flag does before running it.
 function helpText() {
@@ -1536,6 +1564,7 @@ ${line}
       ZEUS_CF_TOKEN       read the API token from the env instead of typing it
       ZEUS_PROBE_WAIT_MS  how long the final address check waits for propagation (default 90000)
       ZEUS_PROBE_URL      custom address for the final health check (used by tests)
+      ZEUS_SETTLE_MS      calm wait between verified upload and address switch-on (default 12000)
 
     Safety: your token is never stored or printed — it always shows as ••••••••.
 ${line}`;

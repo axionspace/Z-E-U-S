@@ -224,6 +224,7 @@ function run(dir, port, args, answers) {
         ZEUS_PROBE_URL: `http://127.0.0.1:${port}/probe`,
         ZEUS_PROBE_WAIT_MS: '3000',
         ZEUS_PROBE_INTERVAL_MS: '400',
+        ZEUS_SETTLE_MS: '100',
       },
     });
     let out = '';
@@ -259,6 +260,7 @@ try {
     check(r.out.includes('the panel answers its own API without one'), 'S1 explains why the password has to come first');
     check(!/[؀-ۿ]/.test(r.out), 'S1 the whole install output is English-only (no Persian/Arabic script)');
     check(r.out.includes('Database is ready'), 'S1 the D1 readiness gate ran before the upload');
+    check(r.out.includes('Letting the deploy settle'), 'S1 the settle pause ran between upload and address switch-on');
     check(r.out.includes('Worker settings confirmed: D1 binding'), 'S1 the deployed settings were verified after the upload');
     const put = state.puts[0];
     check(!!put, 'S1 a worker script was uploaded');
@@ -666,6 +668,24 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S21 stale 1101 record
+  console.log('• S21 overwriting a worker that already 1101s is flagged up front');
+  {
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({ probeMode: 'stuck-heals' });
+    // a leftover record from an earlier aborted run: exists in the API, 1101s on the edge
+    state.scripts['panel-dup'] = { bytes: Buffer.from(CANON), metadata: null };
+    const r = await run(root, port, [], [TOKEN, 'panel-dup', 'y', 'n']);
+    check(!r.fatal && r.code === 0, 'S21 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
+    check(r.out.includes('already answers "error code: 1101" right now'), 'S21 the pre-flight names the stale broken record before asking');
+    check(r.out.includes('overwriting it with a fresh upload is the fix'), 'S21 the pre-flight recommends exactly the cure');
+    check(r.out.includes('Self-heal worked'), 'S21 the heal still confirmed the fresh deploy', r.out.slice(-1500));
+    check(state.deletes.length === 1, 'S21 exactly one script DELETE overall', JSON.stringify(state.deletes));
+    check(r.out.includes('Install complete'), 'S21 the install completed');
+    server.close();
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');
@@ -684,6 +704,8 @@ try {
     check(REQUIRED_COMPAT_DATE === '2026-07-10' && REQUIRED_COMPAT_FLAGS.join(',') === 'nodejs_compat', 'S8 the required runtime values match the panel OTA updater', REQUIRED_COMPAT_DATE + ' ' + REQUIRED_COMPAT_FLAGS.join(','));
     check(typeof classifyDeployment === 'function', 'S8 classifyDeployment is exported and testable');
     check(wizTxt.includes('--doctor') && wizTxt.includes('function doctorMain('), 'S8 the read-only doctor mode exists');
+    check(wizTxt.includes('function settleDeploy(') && wizTxt.includes('ZEUS_SETTLE_MS'), 'S8 the post-upload settle pause exists and is overridable');
+    check(wizTxt.includes('already answers "error code: 1101" right now'), 'S8 the overwrite pre-flight warns about a stale 1101 record');
     const shTxt = readFileSync(join(PROJECT, 'install.sh'), 'utf8');
     const psTxt = readFileSync(join(PROJECT, 'install.ps1'), 'utf8');
     check(shTxt.includes('--check') && shTxt.includes('51200') && shTxt.includes('Zeus Install Wizard'), 'S8 install.sh validates the wizard download (size + marker + syntax) before running it');
