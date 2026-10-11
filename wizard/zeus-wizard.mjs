@@ -237,7 +237,9 @@ async function askSecret(rl, q) {
     };
     const onExit = () => restoreTty();
     const onKey = (str, key) => {
-      if (key && key.name === 'return') { cleanup(); paint(); process.stdout.write('\n  ' + maskSecret(value.trim()) + '\n'); resolve(value.trim()); return; }
+      // The last keypress already repainted the line, so Enter only drops the final
+      // mask line — no redundant repaint (keeps transcripts to one mask per burst).
+      if (key && key.name === 'return') { cleanup(); process.stdout.write('\n  ' + maskSecret(value.trim()) + '\n'); resolve(value.trim()); return; }
       // Ctrl+C must always work, even while the terminal is in raw mode
       if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
       if (key && key.name === 'backspace') { if (value.length) value = value.slice(0, -1); paint(); return; }
@@ -1041,6 +1043,15 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const failedAt = new Date().toISOString();
   console.log('  First failing probe (UTC): ' + failedAt);
   console.log('  To read the exact exception behind a future 1101: dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs, around ' + failedAt.slice(0, 16).replace('T', ' ') + ' UTC.');
+  // Cheap fix first: the stuck state may live in this deploy *version* rather than the
+  // script record, in which case a fresh version of the identical bytes clears it with
+  // no delete at all (routes stay attached the whole time, so this is also faster).
+  // Only if that fails does the wizard fall through to delete-and-recreate below.
+  console.log('  💬 Same bytes, new version first — re-uploading once without deleting anything…');
+  await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
+  const retry = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
+  if (retry.verdict === 'ok') { ok('Re-upload worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
+  warn('Re-upload alone did not clear it (' + retry.verdict + ') — falling through to recreating the worker script.');
   const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
   if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false, rebuilt: null }; }
   ok('Worker script removed; the database ' + (dbName || 'DB') + ' was not touched');

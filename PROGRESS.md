@@ -781,3 +781,46 @@ Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
+
+---
+
+## 2026-10-11 — re-upload first, delete only if needed + transcript beauty (owner transcript)
+
+### What the owner's transcript proved
+A live fresh install (`dddffgggg`) passed every deploy-time check, 1101'd at the
+final check, and healed via delete+recreate — same bytes, DB untouched. Two asks
+came back: make the output beautiful, and fix the bug so the delete is rarely needed.
+
+### Heal order flipped: re-PUT before delete (`wizard/zeus-wizard.mjs`)
+The stuck-1101 branch now tries the cheap fix first: re-upload the identical bytes
+as a **new version with no delete** (routes stay attached, so this is also faster),
+re-verify, and re-probe on a bounded window. Only if the fresh version still 1101s
+does it fall through to the existing delete-confirm-recreate path. Rationale: the
+stuck state may live in the deploy *version* (new version clears it, zero deletes)
+or in the script *record* (only recreation clears it) — and the wizard can no
+longer tell which from outside, so it tries them in order of cost. Whichever path
+heals gets recorded in the profile; the honest-stop and evidence lines are unchanged.
+Side benefit for the owner's "clean deployment" ask: version-level incidents now
+heal with no delete at all.
+
+### Transcript beauty
+* Token prompt: dropped the redundant repaint on Enter (the last keypress already
+  repainted) — a paste+Enter now leaves exactly two clean mask lines in captured
+  logs instead of three overlapping ones. Live-terminal behavior unchanged
+  (whole-line erase per keypress, mask-only, nothing readable left behind).
+* The `dddffgggg`-style doubled echo in the transcript is the console's own typing
+  echo plus the piped-log line — no wizard code prints regular answers twice on a
+  TTY (verified by reading `ask()`; piped runs still print answers once for logs).
+  No change needed beyond the token prompt; stated, not chased.
+
+### Tests
+* New probe mode `stuck-heals-reput` (1101 until the second PUT, then 200).
+* New S22 (9 checks): cheap path heals with 2 PUTs, 0 DELETEs, `Re-upload worked`,
+  profile records the heal, install completes.
+* S12/S13 updated to the new order (3 PUTs: initial + re-upload + post-delete
+  redeploy, exactly 1 DELETE); S8 asserts the re-PUT-first text; DELETE count in
+  the wizard is still exactly one.
+* `test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`.

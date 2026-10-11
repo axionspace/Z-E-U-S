@@ -105,6 +105,12 @@ function startMock(opt = {}) {
           res.writeHead(500, { 'content-type': 'text/plain' });
           return res.end('error code: 1101');
         }
+        if (state.probeMode === 'stuck-heals-reput') {
+          // A fresh version of identical bytes clears it — no delete required.
+          if (fixed) return json(200, okEnv('up'));
+          res.writeHead(500, { 'content-type': 'text/plain' });
+          return res.end('error code: 1101');
+        }
         if (state.probeMode === 'stuck-heals') {
           if (!healed) { res.writeHead(500, { 'content-type': 'text/plain' }); return res.end('error code: 1101'); }
           return json(200, okEnv('up'));
@@ -482,8 +488,9 @@ try {
     check(!/[؀-ۿ]/.test(r.out), 'S12 the whole self-heal output is English-only');
     check(state.deletes.length === 1 && /\/workers\/scripts\//.test(state.deletes[0]), 'S12 issued exactly one DELETE, on the worker script', JSON.stringify(state.deletes));
     check(!state.deletes.some((d) => /d1\/database/.test(d)), 'S12 never deletes a database', JSON.stringify(state.deletes));
-    check(state.puts.length === 2, 'S12 redeployed the script once', 'PUTs=' + state.puts.length);
-    check(state.puts.length === 2 && sha(state.puts[0].bytes) === sha(state.puts[1].bytes), 'S12 redeployed the identical personalised bytes');
+    check(r.out.includes('Same bytes, new version first'), 'S12 tries the cheap re-upload before the delete');
+    check(state.puts.length === 3, 'S12 uploaded thrice total (initial + re-upload + post-delete redeploy)', 'PUTs=' + state.puts.length);
+    check(state.puts.length === 3 && sha(state.puts[0].bytes) === sha(state.puts[1].bytes) && sha(state.puts[1].bytes) === sha(state.puts[2].bytes), 'S12 all three uploads are the identical personalised bytes');
     check(r.out.includes('Self-heal worked'), 'S12 reports the healed address as working', r.out.slice(-1500));
     const prof = readProf();
     check(!!prof && !!prof.healedAt, 'S12 records the self-heal in the profile');
@@ -498,7 +505,7 @@ try {
     const r = await run(root, port, [], [TOKEN, '', 'n']);
     check(!r.fatal && r.code === 0, 'S13 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
     check(state.deletes.length === 1, 'S13 tried the self-heal exactly once', JSON.stringify(state.deletes));
-    check(state.puts.length === 2, 'S13 did not loop re-uploads', 'PUTs=' + state.puts.length);
+    check(state.puts.length === 3, 'S13 did not loop re-uploads (initial + re-upload + post-delete redeploy)', 'PUTs=' + state.puts.length);
     check(r.out.includes('Still not answering after one self-heal'), 'S13 tells the truth instead of pretending success');
     check(/First failing probe \(UTC\): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(r.out), 'S13 stamps the failure with a UTC timestamp for the dashboard logs');
     check(r.out.includes('Observability → Logs'), 'S13 points at the one dashboard click that shows the exact exception');
@@ -707,6 +714,26 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S22 re-upload heals
+  console.log('• S22 a version-level 1101 heals with a re-upload, no delete');
+  {
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({ probeMode: 'stuck-heals-reput' });
+    const r = await run(root, port, [], [TOKEN, '', 'n']);
+    check(!r.fatal && r.code === 0, 'S22 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
+    check(r.out.includes('Same bytes, new version first'), 'S22 tries the cheap fix before any delete');
+    check(state.deletes.length === 0, 'S22 no DELETE was needed at all', JSON.stringify(state.deletes));
+    check(state.puts.length === 2, 'S22 uploaded twice total (initial + re-upload)', 'PUTs=' + state.puts.length);
+    check(state.puts.length === 2 && sha(state.puts[0].bytes) === sha(state.puts[1].bytes), 'S22 both uploads are the identical personalised bytes');
+    check(r.out.includes('Re-upload worked'), 'S22 reports the healed address as working', r.out.slice(-1500));
+    check(!r.out.includes('Worker script removed'), 'S22 never went near the delete path');
+    check(r.out.includes('Install complete'), 'S22 still completes the install');
+    const prof = readProf();
+    check(!!prof && !!prof.healedAt, 'S22 the delete-free heal is still recorded in the profile');
+    server.close();
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');
@@ -725,6 +752,7 @@ try {
     check(REQUIRED_COMPAT_DATE === '2026-07-10' && REQUIRED_COMPAT_FLAGS.join(',') === 'nodejs_compat', 'S8 the required runtime values match the panel OTA updater', REQUIRED_COMPAT_DATE + ' ' + REQUIRED_COMPAT_FLAGS.join(','));
     check(typeof classifyDeployment === 'function', 'S8 classifyDeployment is exported and testable');
     check(wizTxt.includes('--doctor') && wizTxt.includes('function doctorMain('), 'S8 the read-only doctor mode exists');
+    check(wizTxt.includes('Same bytes, new version first'), 'S8 the stuck-1101 path tries a delete-free re-upload before recreating the script');
     check(wizTxt.includes('function settleDeploy(') && wizTxt.includes('ZEUS_SETTLE_MS'), 'S8 the post-upload settle pause exists and is overridable');
     check(wizTxt.includes('twice in a row'), 'S8 settings confirmation requires two agreeing reads (no single flapping read)');
     check(wizTxt.includes('Observability → Logs'), 'S8 failures print a UTC timestamp plus the dashboard path to the exact exception');
