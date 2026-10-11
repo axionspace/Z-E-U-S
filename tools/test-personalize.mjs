@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-import { detectPrelude, personalize, xorDecode, checkHardened, KW_RE, NAME_BLOCK_RE } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, personalize, xorDecode, checkHardened, KW_RE, NAME_BLOCK_RE } from '../wizard/wizard.mjs';
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');

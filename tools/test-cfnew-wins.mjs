@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { detectPrelude, xorDecode } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode } from '../wizard/wizard.mjs';
 
 const build = readFileSync(new URL('../Source-hardened.js', import.meta.url), 'utf8');
 let pass = 0, fail = 0;

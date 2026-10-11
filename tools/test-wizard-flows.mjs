@@ -18,11 +18,11 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
-import { detectPrelude, xorDecode, KW_RE, FORK_SOURCES, PERM_GROUPS, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS, classifyDeployment } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode, KW_RE, FORK_SOURCES, PERM_GROUPS, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS, classifyDeployment } from '../wizard/wizard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT = resolve(__dirname, '..');
-const WIZARD_SRC = join(PROJECT, 'wizard', 'zeus-wizard.mjs');
+const WIZARD_SRC = join(PROJECT, 'wizard', 'wizard.mjs');
 const SOURCE_FILE = join(PROJECT, 'Source-hardened.js');
 const KEEP = process.argv.includes('--keep');
 
@@ -216,8 +216,8 @@ function run(dir, port, args, answers) {
     const src = readFileSync(WIZARD_SRC, 'utf8');
     const patched = src.replace("const API = 'https://api.cloudflare.com/client/v4';", `const API = 'http://127.0.0.1:${port}/client/v4';`);
     if (patched === src) return res({ fatal: 'could not patch the API base URL' });
-    writeFileSync(join(dir, 'wizard', 'zeus-wizard.mjs'), patched);
-    const child = spawn(process.execPath, [join(dir, 'wizard', 'zeus-wizard.mjs'), ...args], {
+    writeFileSync(join(dir, 'wizard', 'wizard.mjs'), patched);
+    const child = spawn(process.execPath, [join(dir, 'wizard', 'wizard.mjs'), ...args], {
       cwd: dir, stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         // The harness owns the environment it hands to the wizard. The token is piped as
@@ -549,7 +549,7 @@ try {
     check(/emitKeypressEvents/.test(wizTxt), 'S15 the hidden reader consumes keypress events instead of line input');
     check(/process\.exit\(130\)/.test(wizTxt), 'S15 Ctrl+C still cancels while the terminal is in raw mode');
     // maskSecret must never leak the value, whatever it is given
-    const { maskSecret } = await import('../wizard/zeus-wizard.mjs');
+    const { maskSecret } = await import('../wizard/wizard.mjs');
     for (const v of ['abc', 'a'.repeat(40), 'short', '']) {
       check(v === '' || !maskSecret(v).includes(v), 'S15 maskSecret never contains the value (len ' + v.length + ')', maskSecret(v));
     }
@@ -569,7 +569,7 @@ try {
     // with a fake TTY stdin that records what the reader draws.
     const wizTxt = readFileSync(WIZARD_SRC, 'utf8');
     check(/from 'node:readline'/.test(wizTxt) && !/readline\.emitKeypressEvents/.test(wizTxt), 'S19 keypress wiring comes from core node:readline (the promises API has no emitKeypressEvents)');
-    const { askSecret } = await import('../wizard/zeus-wizard.mjs');
+    const { askSecret } = await import('../wizard/wizard.mjs');
     const { EventEmitter } = await import('node:events');
     const realStdin = process.stdin;
     const realWrite = process.stdout.write.bind(process.stdout);
@@ -764,13 +764,8 @@ try {
     check(wizTxt.includes('canHeal: false') && (wizTxt.match(/canHeal/g) || []).length >= 3, 'S8 the self-heal is capped at one attempt (no recursion)');
     check((wizTxt.match(/method: 'DELETE'/g) || []).length === 1, 'S8 exactly one DELETE exists in the wizard (the worker-script self-heal)', String((wizTxt.match(/method: 'DELETE'/g) || []).length));
     check(!/d1\/database\/[^`'"]*\\?`[^`]*method:\s*'DELETE'/.test(wizTxt) && !/d1\/database\/\$\{dbId\}`,\s*\{\s*method:\s*'DELETE'/.test(wizTxt), 'S8 no DELETE is ever issued against a database');
-    // The published installer path (wizard/wizard.mjs) and this repository layout’s copy
-    // (wizard/zeus-wizard.mjs) must be the same file, or a branch would ship a wizard that
-    // the tooling never tested.
-    if (existsSync(join(PROJECT, "wizard", "wizard.mjs"))) {
-      const published = readFileSync(join(PROJECT, "wizard", "wizard.mjs"));
-      check(sha(published) === sha(readFileSync(WIZARD_SRC)), "S8 wizard/wizard.mjs and wizard/zeus-wizard.mjs are byte-identical (no drift between the published path and the tested one)");
-    }  }
+    // The published installer path (wizard/wizard.mjs) is the single canonical wizard file.
+    check(existsSync(WIZARD_SRC), "S8 wizard/wizard.mjs exists and is the canonical installer script");  }
 } finally {
   if (KEEP) console.log('Kept temp dir: ' + root + '\n');
   else rmSync(root, { recursive: true, force: true });

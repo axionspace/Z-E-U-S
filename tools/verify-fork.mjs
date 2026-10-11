@@ -23,7 +23,7 @@
 // Usage: GH_TOKEN=<t> CF_TOKEN=<t?> node tools/verify-fork.mjs
 import { readFileSync } from 'fs';
 import { createHash } from 'crypto';
-import { detectPrelude, xorDecode } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode } from '../wizard/wizard.mjs';
 
 const OWNER = 'axionspace', REPO = 'Z-E-U-S', UP = 'panel-zeus/Z-E-U-S';
 // Which fork ref to audit. Defaults to the published `main`; a delivery branch (e.g.
@@ -59,7 +59,7 @@ const ok = (cond, label, extra = '') => { console.log((cond ? 'PASS' : 'FAIL') +
 	ok(local.length === 855815, 'local hardened build size = 855,815B', local.length + 'B');
 	ok(countSurv(localTxt) === 0, 'local hardened build: 0 keyword survivors', countSurv(localTxt) + ' found');
 	ok(localTxt.includes('const _ZK') && localTxt.includes('function _G'), 'local hardened build: _ZK/_G runtime table present');
-	const localWiz = readFileSync(new URL('../wizard/zeus-wizard.mjs', import.meta.url));
+	const localWiz = readFileSync(new URL('../wizard/wizard.mjs', import.meta.url));
 	const localWizTxt = localWiz.toString('utf8');
 	const localReadme = readFileSync(new URL('../analysis/README-fork.md', import.meta.url));
 	const localReadmeFa = readFileSync(new URL('../analysis/README-fa-fork.md', import.meta.url));

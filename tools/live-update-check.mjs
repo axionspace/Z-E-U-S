@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { personalize } from '../wizard/zeus-wizard.mjs';
+import { personalize } from '../wizard/wizard.mjs';
 
 const API = 'https://api.cloudflare.com/client/v4';
 const WIZ_URL = 'https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/wizard.mjs';
@@ -84,7 +84,7 @@ const bytesBefore = await deployed(WORKER);
 console.log('--- [1] --update with no profile in the folder (zero side effects) ---');
 try {
   const buf = Buffer.from(await (await fetch(WIZ_URL)).arrayBuffer());
-  const local = readFileSync(new URL('../wizard/zeus-wizard.mjs', import.meta.url));
+  const local = readFileSync(new URL('../wizard/wizard.mjs', import.meta.url));
   // Which build this run deploys: the local one, so the identity guarantees below are checked
   // against the bytes the wizard really used (REF on the fork can be ahead of, or behind, the
   // local working tree — that is reported, never asserted).

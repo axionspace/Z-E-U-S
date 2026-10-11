@@ -3,7 +3,7 @@
 // the decoded payload table (quasis / keyword-bearing literals), because harden.mjs only
 // moves protocol-identifying strings into the table.
 import { readFileSync } from 'node:fs';
-import { detectPrelude, xorDecode, checkHardened } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode, checkHardened } from '../wizard/wizard.mjs';
 
 const build = readFileSync(new URL('../Source-hardened.js', import.meta.url), 'utf8');
 const det = detectPrelude(build);

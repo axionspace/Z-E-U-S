@@ -55,7 +55,7 @@ console.log('census before:', JSON.stringify(before));
 // ---- deploy through the wizard's own --update path
 const dir = mkdtempSync(join(tmpdir(), 'zeus-ech-live-'));
 mkdirSync(join(dir, 'zeus-wizard'), { recursive: true });
-writeFileSync(join(dir, 'zeus-wizard', 'wizard.mjs'), readFileSync(pathJoin(ROOT, 'wizard', 'zeus-wizard.mjs')));
+writeFileSync(join(dir, 'zeus-wizard', 'wizard.mjs'), readFileSync(pathJoin(ROOT, 'wizard', 'wizard.mjs')));
 writeFileSync(join(dir, 'zeus-wizard', 'profile.json'), JSON.stringify(prof0));
 // The wizard only accepts a HARDENED source from disk, so the new build must sit at the
 // repository-root path it looks for. The plain analysis/Source.js is rejected on purpose.
@@ -97,7 +97,7 @@ const deployedJs = jsPart ? Buffer.from(jsPart.slice(jsPart.indexOf('\r\n\r\n') 
 ok(deployedJs.length > 800000, 'the deployed script was read back', deployedJs.length + 'B');
 // The ECH UI strings live inside the encoded payload table (that is the point of the
 // hardening), so both the served bytes and the decoded table have to be searched.
-const { detectPrelude, xorDecode } = await import('../wizard/zeus-wizard.mjs');
+const { detectPrelude, xorDecode } = await import('../wizard/wizard.mjs');
 const liveDet = detectPrelude(deployedJs);
 const liveRows = liveDet ? liveDet.blobs.map((b) => xorDecode(b, liveDet.key)).join(' ') : '';
 const liveAll = deployedJs + ' ' + liveRows;

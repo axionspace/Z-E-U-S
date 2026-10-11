@@ -847,6 +847,11 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   let up = await putOnce();
   if (!up.ok) fail('Worker upload failed (' + up.errors + ')', up.status === 413 ? 'Script is too large — build a different source version.' : 'Check Workers Scripts/Edit access in the token.');
   ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ' ' + flags.join('+') + ')');
+  // Trigger early subdomain route registration so Cloudflare Anycast propagates
+  // in parallel with settings verification and read-back:
+  cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
+    method: 'POST', body: { enabled: true, previews_enabled: false },
+  }).catch(() => {});
   // Settings are eventually consistent after a PUT: poll until the API reports back the
   // bindings, date and flags that were just sent — twice in a row, so a single flapping
   // read can't fake a confirmation. Deploying blind here used to leave workers behind
@@ -994,10 +999,12 @@ async function waitForVerdict(base, waitMs, stepMs) {
 async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true, srcPath = null, seed = null }) {
   const base = probeBase(workerName, subdomain);
   const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 90000);
-  const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 8000);
+  const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 2500);
   const deadline = Date.now() + waitMs;
   let last = null;
+  let attempt = 0;
   for (;;) {
+    attempt++;
     last = await probeOnce(base);
     const state = classifyProbe(last);
     if (state === 'ok') {
@@ -1007,6 +1014,9 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     // The panel's own answers are deterministic — no point waiting out the window.
     if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
     if (Date.now() >= deadline) break;
+    if (attempt % 2 === 1) {
+      console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
+    }
     await new Promise((r) => setTimeout(r, stepMs));
   }
   // One slow, careful pass over every route before deciding anything.

@@ -9,7 +9,7 @@ const SUB = process.env.ZEUS_SUB || 'axionum';
 if (!T) { console.error('ZEUS_CF_TOKEN required'); process.exit(1); }
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { detectPrelude, xorDecode, personalize } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode, personalize } from '../wizard/wizard.mjs';
 
 const A = 'fed5633e7d83fa4640cbc49ac8259448';
 const API = 'https://api.cloudflare.com/client/v4';

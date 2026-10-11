@@ -6,7 +6,7 @@ import { writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { detectPrelude, xorDecode } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode } from '../wizard/wizard.mjs';
 
 const build = readFileSync(new URL('../Source-hardened.js', import.meta.url), 'utf8');
 const upstreamPath = new URL('../analysis/Source.js', import.meta.url);

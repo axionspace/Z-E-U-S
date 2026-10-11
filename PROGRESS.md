@@ -850,7 +850,16 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 
 ### Verification & Account Cleanup
 - `test-wizard-flows` **215/0**, personalize **104/0**, ECH **41/0**, cfnew-wins **21/0**.
-- `wizard/wizard.mjs` and `wizard/zeus-wizard.mjs` synced byte-identical.
 - Account cleanup: all stray/test workers (`besstest`, `hyhyhyhy`, `web-veksu`, `webees`, `web-xjchh`) and their databases deleted via API. Only `web-panel` and `web-panel-db` preserved.
 - Live test: panel answers 200 OK (`تعریف رمز عبور پـنـل`).
+
+---
+
+## 2026-10-12 — Speed optimization & wizard cleanup: remove duplicate zeus-wizard.mjs + 2.5s fast probe
+
+### What changed
+1. **Removed redundant `wizard/zeus-wizard.mjs`**: `wizard/wizard.mjs` is the single canonical wizard file downloaded by `install.ps1`/`install.sh` and used in repository clones. Updated all tooling in `tools/` to import `wizard.mjs` directly.
+2. **Early parallel route registration**: right after `uploadWorker`'s PUT succeeds, `POST /subdomain` is immediately triggered in the background so Cloudflare Anycast edge route propagation runs concurrently while the wizard finishes settings confirmation and read-back verification (~10s head start).
+3. **Fast probe interval (2.5s) + live terminal feedback**: `verifyDeployment` probe interval reduced from 8s to 2.5s with live heartbeat output per attempt, catching edge convergence instantly instead of waiting up to 8s per retry.
+
 
