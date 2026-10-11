@@ -719,12 +719,16 @@ async function ensureD1Ready(accountId, dbId, dbName) {
 // script version needs a moment to register on every edge node; hammering the address
 // (or flipping routes) the same second the bytes land is the most avoidable trigger of
 // the stuck-1101 deploy state. One calm wait here beats a delete-and-redeploy later.
-// Overridable for tests via ZEUS_SETTLE_MS (default 12000).
-async function settleDeploy() {
-  const ms = Number(process.env.ZEUS_SETTLE_MS || 12000);
-  if (!(ms > 0)) return;
-  console.log('     Letting the deploy settle across the edge (' + Math.round(ms / 1000) + 's) before switching the address on…');
-  await new Promise((r) => setTimeout(r, ms));
+// Brand-new workers get the long quiet period (nothing has ever served from that name);
+// re-uploads to an existing worker get the short one. ZEUS_SETTLE_MS overrides only the
+// actual wait (tests use it to stay fast); the message always states the intended period.
+async function settleDeploy(fresh) {
+  const ms = fresh ? 30000 : 12000;
+  const override = process.env.ZEUS_SETTLE_MS;
+  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : ms;
+  if (!(wait > 0)) return;
+  console.log('     Letting the deploy settle across the edge (' + Math.round(ms / 1000) + 's' + (fresh ? ' quiet period for a brand-new worker' : '') + ') before switching the address on…');
+  await new Promise((r) => setTimeout(r, wait));
 }
 
 // Occasionally a freshly created worker on an account starts answering error 1101 on
@@ -857,7 +861,10 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   } else {
     warn('Could not read the deployed script back for comparison (' + (back.errors || 'HTTP ' + back.status) + ').');
   }
-  return up;
+  // `fresh` tells callers whether this name ever existed before: a brand-new worker
+  // has never served a single request, so it gets the long quiet period. An existing
+  // worker already has warm routes and only needs the short one.
+  return { up, fresh: settings.status === 404 };
 }
 
 // ------------------------------------------------------------------ health + self-heal
@@ -1205,8 +1212,8 @@ async function main() {
     if (overwrite.toLowerCase() !== 'y') fail('Cancelled by user.', 'Pick a different worker name if you do not want to replace it.');
     console.log('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
   }
-  await uploadWorker(accountId, workerName, build.path, dbId, dbName);
-  await settleDeploy();
+  const { fresh } = await uploadWorker(accountId, workerName, build.path, dbId, dbName);
+  await settleDeploy(fresh);
 
   const panelUrl = `https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/panel`;
   const prof = {
@@ -1451,7 +1458,7 @@ async function updateMain() {
   // ---------- [5/6] upload
   nextStep('Upload the update');
   await uploadWorker(accountId, workerName, build.path, dbId, dbName);
-  await settleDeploy();
+  await settleDeploy(!current.known);
 
   // ---------- [6/6] prove the data is intact
   nextStep('Verify nothing was lost');

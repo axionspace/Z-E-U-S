@@ -261,6 +261,7 @@ try {
     check(!/[؀-ۿ]/.test(r.out), 'S1 the whole install output is English-only (no Persian/Arabic script)');
     check(r.out.includes('Database is ready'), 'S1 the D1 readiness gate ran before the upload');
     check(r.out.includes('Letting the deploy settle'), 'S1 the settle pause ran between upload and address switch-on');
+    check(r.out.includes('(30s quiet period for a brand-new worker)'), 'S1 a fresh worker gets the long quiet period');
     check(r.out.includes('Worker settings confirmed: D1 binding'), 'S1 the deployed settings were verified after the upload');
     const put = state.puts[0];
     check(!!put, 'S1 a worker script was uploaded');
@@ -328,6 +329,7 @@ try {
     check(r.out.includes('row census before: users=5, settings=12'), 'S3 read the database census first', r.out.match(/row census before.*/)?.[0]);
     check(r.out.includes('Database intact: 2 tables with identical row counts'), 'S3 proves the rows survived');
     check(r.out.includes('Update complete'), 'S3 finished');
+    check(r.out.includes('Letting the deploy settle across the edge (12s)'), 'S3 a re-upload to an existing worker gets the short quiet period');
     const put = state.puts[0];
     check(!!put && put.name === 'panel-one', 'S3 uploaded to the saved worker', put && put.name);
     if (put) {
@@ -394,6 +396,7 @@ try {
     const r = await run(root, port, ['--update'], [TOKEN, '', '', 'gone-db']);
     check(!r.fatal && r.code === 0, 'S6 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('using the saved database id instead'), 'S6 reused the saved database');
+    check(r.out.includes('(30s quiet period for a brand-new worker)'), 'S6 an update that creates the worker gets the long quiet period');
     const put = state.puts[0];
     check(!!put && put.metadata.bindings.find((b) => b.type === 'd1').id === DB_UUID, 'S6 D1 binding points at the saved database');
     check(state.requests.every((q) => q.method !== 'DELETE'), 'S6 no DELETE request issued');

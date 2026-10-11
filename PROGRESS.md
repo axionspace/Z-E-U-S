@@ -692,3 +692,46 @@ it and stop reusing stale breakage.
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
+
+---
+
+## 2026-10-11 — root-cause hunt: why fresh deploys 1101 at all (owner: fix it, don't just heal it)
+
+### Boot-path audit (analysis/Source.js) — panel code ruled out, with evidence
+* Module top level: one `import { connect } from "cloudflare:sockets"` + plain `let`
+  initializers. No top-level `await`/`fetch`/`env` access (grep-verified). Evaluation
+  cannot throw from app code.
+* The 90-row payload decoder runs at most once per isolate and only via `atob` +
+  non-fatal `TextDecoder` over re-encoded standard-base64 blobs — no throw path.
+* First-request path: `ensureSchema` (every statement individually try/caught),
+  `trackRequest` (try/caught inside `waitUntil`), password read (try/caught → null =
+  first-run open mode), auto-resets/rotates (all `waitUntil`). Missing D1 binding
+  returns the panel's own 500 text, never a platform 1101.
+* Deployed metadata is provably sufficient: live panels run on exactly what the
+  wizard sends (D1 `id` binding shape matches the real API, which returns both `id`
+  and `database_id`).
+* Conclusion: with verified-identical bytes that boot clean after redeploy, the
+  remaining cause that fits all evidence is per-version edge boot state on
+  Cloudflare's side — a version that takes traffic before it is fully registered
+  everywhere can fail its first boot and stay failed, while the next identical
+  version boots clean. Not observable from outside (the exception text lives only
+  in worker logs at failure time); mitigated at the only layer owned: deploy timing.
+
+### Timing fix (`wizard/zeus-wizard.mjs`, deploy-time only)
+* `uploadWorker` now returns `{ up, fresh }` (`fresh` = settings was 404: the name
+  never existed, including post-delete recreations).
+* `settleDeploy(fresh)`: 30s quiet period for brand-new workers, 12s for
+  re-uploads; `ZEUS_SETTLE_MS` overrides only the actual wait (tests stay fast),
+  the message always states the intended period. Wired into install (from the
+  upload result) and update (from `!current.known`, so updates that create the
+  worker also get 30s). Heal re-uploads keep their existing probe windows.
+* Net effect on the happy path: one honest ~12–30s line in the log where there
+  used to be a race, instead of a delete-and-redeploy cycle afterwards.
+
+### Tests
+* S1 asserts the 30s fresh-worker message; S3 asserts the 12s existing-worker
+  message; S6 (update that creates the worker) asserts 30s.
+* `test-wizard-flows` **196/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`.
