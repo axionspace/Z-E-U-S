@@ -784,52 +784,6 @@ Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 
 ---
 
-## 2026-10-11 — the fix moves forward: route-attachment gate + heal ladder (owner: fix first-time)
-
-### The insight from the owner's live transcript
-`dddffgggg` passed every deploy-time check and still 1101'd — then healed only
-after delete + recreate + **re-enable**. Re-examining the sequence exposed a
-suspect nobody had named: if the subdomain-enable POST races (or loses to) the
-upload, the address may never get attached to the version at all — and an
-unattached route is indistinguishable from a stuck deploy later. Under this
-hypothesis the delete was incidental; the second *enable* was the cure. The
-wizard now tests that hypothesis in order instead of assuming poison.
-
-### Changes (`wizard/zeus-wizard.mjs`, deploy-time only, panel untouched)
-1. **Route-attachment DNS gate** (new exported `awaitRouteDns()`): after enabling
-   the address, confirm via DoH (overridable `ZEUS_DOH_URL`, default
-   cloudflare-dns.com) that the hostname resolves — zero worker traffic, so
-   nothing to poison. Best-effort and never fatal: filtered networks often block
-   DNS checks, so a miss warns and moves on; the HTTP check still decides.
-2. **Step 9 re-applies a lost enable**: if the gate fails right after enabling,
-   the wizard POSTs the enable once more and re-checks — the only moment a
-   detached route can be fixed with no delete.
-3. **Stuck ladder is now three rungs**: (a) re-upload identical bytes as a new
-   version — fixes version-poison, no delete; (b) re-apply the address enable +
-   DNS gate + re-probe — fixes detached-route, no delete; (c) delete-confirm-
-   recreate — fixes record-poison. Whichever rung heals prints its own line
-   (`Re-upload worked` / `Route fix worked` / `Self-heal worked`), so the log now
-   *discriminates* the class instead of lumping everything as "poisoned".
-4. Honest boundary kept: per-version edge boot state remains unobservable from
-   outside; in-wizard Tail capture was declined again (unverifiable websocket
-   protocol + token scopes without a live token — same lesson as the last crash).
-   The UTC timestamp + Observability path stays on every failure.
-
-### Tests
-* Mock: DoH stub (`/dns-query`, `dnsEmpty` mode), subdomain-enable counter, new
-  `detached-route` mode (1101 until the second enable POST, then 200 — a re-PUT
-  alone cannot fix this class, by construction).
-* New S23 (8 checks): middle rung heals with 2 PUTs, 2 enables, 0 DELETEs,
-  `Route fix worked`, DNS gate confirms, install completes.
-* S1 asserts the gate passes; S8 asserts the gate + ladder strings. S12/S13/S22
-  unaffected in counts (middle rung only runs when earlier rungs fail).
-* `test-wizard-flows` **225/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
-
-Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
-`tools/test-wizard-flows.mjs`.
-
----
-
 ## 2026-10-11 — re-upload first, delete only if needed + transcript beauty (owner transcript)
 
 ### What the owner's transcript proved
@@ -870,3 +824,17 @@ heal with no delete at all.
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
+
+---
+
+## 2026-10-11 — reverted: route-attachment gate + three-rung ladder (owner request)
+
+Owner asked to revert to the previous version. Reverted commit `2cbe7fd`
+(`git revert`, no history rewritten): the DoH route-attachment gate, the step-9
+re-apply, the middle heal rung (`Route fix worked`), the `detached-route` mock
+mode, S23, and the related S1/S8 assertions are all gone. What stays: English UI,
+re-PUT-first heal order (S22), 10s/5s settle pauses, per-verdict diagnosis,
+`--doctor`, evidence timestamps — i.e. the `aa8d87d` baseline, verified green
+(`test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0).
+Pushed to both refs (fast-forward). If the owner meant a different revert target
+(pre-English wizard, a live panel), say which — this revert is itself revertible.

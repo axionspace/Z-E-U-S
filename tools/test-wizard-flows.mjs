@@ -58,8 +58,6 @@ function startMock(opt = {}) {
     settings: opt.settings || null,
     censusFails: !!opt.censusFails,
     emptyDb: !!opt.emptyDb, // D1 answers "no tables yet" so the readiness gate must create them
-    dnsEmpty: !!opt.dnsEmpty, // DoH answers "no records yet" so the route gate must wait/retry
-    enables: 0, // subdomain enable POSTs received (drives the detached-route mode)
     probeMode: opt.probeMode || 'ok',   // ok | propagate | stuck | stuck-heals
     probeHits: 0,
   };
@@ -75,11 +73,6 @@ function startMock(opt = {}) {
       state.requests.push({ method, path: p + (url.search || '') });
       if (method === 'DELETE') state.deletes.push(p);
       const json = (status, obj) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
-      // DoH stub for the wizard's route-DNS gate (ZEUS_DOH_URL points here).
-      if (url.pathname === '/dns-query') {
-        if (state.dnsEmpty) return json(200, { Status: 0, Answer: [] });
-        return json(200, { Status: 0, Answer: [{ name: 'x', type: 1, TTL: 60, data: '203.0.113.7' }] });
-      }
       // the panel-address health probe the wizard polls (ZEUS_PROBE_URL points here).
       // The wizard probes three routes now ('/', '/panel', '/api/does-not-exist') so one
       // fast poll cannot confuse a panel-side 500 with a Cloudflare 1101 page.
@@ -115,14 +108,6 @@ function startMock(opt = {}) {
         if (state.probeMode === 'stuck-heals-reput') {
           // A fresh version of identical bytes clears it — no delete required.
           if (fixed) return json(200, okEnv('up'));
-          res.writeHead(500, { 'content-type': 'text/plain' });
-          return res.end('error code: 1101');
-        }
-        if (state.probeMode === 'detached-route') {
-          // The address was never attached to any version: 1101 until the wizard
-          // re-applies the subdomain enable (second enable POST), then 200.
-          // A re-PUT alone cannot fix this class — only the re-enable can.
-          if (state.enables >= 2) return json(200, okEnv('up'));
           res.writeHead(500, { 'content-type': 'text/plain' });
           return res.end('error code: 1101');
         }
@@ -215,7 +200,7 @@ function startMock(opt = {}) {
         }
         // NOTE: this sits outside the script-match block on purpose — the subdomain path
         // has an extra segment (/scripts/<name>/subdomain) that the script regex rejects.
-        if (method === 'POST' && /\/workers\/scripts\/[^/]+\/subdomain$/.test(p)) { state.enables++; return json(200, okEnv({ enabled: true })); }
+        if (method === 'POST' && /\/workers\/scripts\/[^/]+\/subdomain$/.test(p)) return json(200, okEnv({ enabled: true }));
         json(404, errEnv(9999, 'mock: unhandled ' + method + ' ' + p));
       } catch (e) {
         json(500, errEnv(500, 'mock error: ' + e.message));
@@ -246,7 +231,6 @@ function run(dir, port, args, answers) {
         ZEUS_PROBE_WAIT_MS: '3000',
         ZEUS_PROBE_INTERVAL_MS: '400',
         ZEUS_SETTLE_MS: '100',
-        ZEUS_DOH_URL: `http://127.0.0.1:${port}/dns-query`,
       },
     });
     let out = '';
@@ -283,7 +267,6 @@ try {
     check(!/[؀-ۿ]/.test(r.out), 'S1 the whole install output is English-only (no Persian/Arabic script)');
     check(r.out.includes('Database is ready'), 'S1 the D1 readiness gate ran before the upload');
     check(r.out.includes('Letting the route attach (~10s)'), 'S1 a fresh worker gets the route-attach pause');
-    check(r.out.includes('Route DNS resolves'), 'S1 the route-attachment DNS gate passed');
     check(r.out.includes('Worker settings confirmed: D1 binding'), 'S1 the deployed settings were verified after the upload');
     const put = state.puts[0];
     check(!!put, 'S1 a worker script was uploaded');
@@ -751,24 +734,6 @@ try {
     console.log('');
   }
 
-  // ------------------------------------------------------------------ S23 detached route
-  console.log('• S23 an unattached route heals with a re-enable, no delete');
-  {
-    rmSync(profPath, { force: true });
-    const { server, state, port } = await startMock({ probeMode: 'detached-route' });
-    const r = await run(root, port, [], [TOKEN, '', 'n']);
-    check(!r.fatal && r.code === 0, 'S23 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
-    check(r.out.includes('Route fix worked'), 'S23 the middle rung healed it', r.out.slice(-1500));
-    check(state.deletes.length === 0, 'S23 no DELETE was needed at all', JSON.stringify(state.deletes));
-    check(state.puts.length === 2, 'S23 uploaded twice total (initial + re-upload)', 'PUTs=' + state.puts.length);
-    check(state.enables >= 2, 'S23 the address was enabled twice (initial + re-apply)', 'enables=' + state.enables);
-    check(!r.out.includes('Worker script removed'), 'S23 never went near the delete path');
-    check(r.out.includes('Route DNS resolves'), 'S23 the DNS gate confirmed the re-attached route');
-    check(r.out.includes('Install complete'), 'S23 still completes the install');
-    server.close();
-    console.log('');
-  }
-
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');
@@ -788,7 +753,6 @@ try {
     check(typeof classifyDeployment === 'function', 'S8 classifyDeployment is exported and testable');
     check(wizTxt.includes('--doctor') && wizTxt.includes('function doctorMain('), 'S8 the read-only doctor mode exists');
     check(wizTxt.includes('Same bytes, new version first'), 'S8 the stuck-1101 path tries a delete-free re-upload before recreating the script');
-    check(wizTxt.includes('function awaitRouteDns(') && wizTxt.includes('Route fix worked'), 'S8 the route-attachment gate and its middle-rung heal exist');
     check(wizTxt.includes('function settleDeploy(') && wizTxt.includes('ZEUS_SETTLE_MS'), 'S8 the post-upload settle pause exists and is overridable');
     check(wizTxt.includes('twice in a row'), 'S8 settings confirmation requires two agreeing reads (no single flapping read)');
     check(wizTxt.includes('Observability → Logs'), 'S8 failures print a UTC timestamp plus the dashboard path to the exact exception');
