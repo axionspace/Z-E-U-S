@@ -515,3 +515,15 @@ The PANEL product itself is intentionally untouched (its Farsi UI is the product
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`, `tools/diagnose-1101.mjs`.
+
+---
+
+## 2026-10-11 — fork `main` fast-forwarded to the delivery (owner: "update github fork too")
+
+`refs/heads/main` on `axionspace/Z-E-U-S` moved `0b8bd8649d` → `c54e450a97` via the API
+with `force:false` (strict fast-forward — the branch was 4 ahead, 0 behind, so no history
+was rewritten and nothing was force-pushed). Verified afterwards: `main` and
+`night-shift/2026-10-11` compare **identical**; `raw.githubusercontent.com/.../main/wizard/wizard.mjs`
+serves the English wizard (no Persian script, `--doctor` + `nodejs_compat` present);
+`main/Source.js` serves 871,154B with 0 keyword survivors. The one-command installer URLs
+therefore now deliver the fixed wizard. Local `e9cf2cc` content == pushed content.
