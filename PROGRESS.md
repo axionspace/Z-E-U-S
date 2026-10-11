@@ -374,3 +374,62 @@ outer `ips.forEach` loop in both generators, so `ip` was undefined at runtime (`
 config: ip is not defined`) — caught only because the live probe actually built a subscription;
 (2) the `/sings/` offset was computed as 6 characters when the prefix is 7. Both are now
 covered by the offline tests plus the live run.
+
+---
+
+## Phase 7 — Final verification + delivery
+
+### 1. Offline (all green, no network)
+| check | command | result |
+| --- | --- | --- |
+| wizard flows | `node tools/test-wizard-flows.mjs` | **130 PASS / 0 FAIL** |
+| fingerprint lossless + name shape | `node tools/test-personalize.mjs` | **104 PASS / 0 FAIL** |
+| ECH survives hardening | `node tools/test-ech-wizard.mjs` | **41 PASS / 0 FAIL** |
+| cfnew wins (fetch order/timeout/cache/TLS-only) | `node tools/test-cfnew-wins.mjs` | **21 PASS / 0 FAIL** |
+| keyword scan | `Source-hardened.js`, `Source.js` | **0 keyword lines** (851 KB) |
+| `personalize()` reproducibility | from `wizard/profile.json` seed | two runs **byte-identical** (sha `34fc63229ef7a75e…`), `verifyTransform` ok, 90 rows / 14 renames, **sorted decoded row set == original set** |
+| decode benchmark | `node tools/bench-decode.mjs` | cold 5.04 ms, cached 54.5 ns — unchanged (nothing added to the request path) |
+| offline smoke | `--help`, `--token-link`, `--prepare-only`, `--personalize` | all work with no Cloudflare calls |
+
+### 2. Live (env token only)
+* `node tools/live-update-check.mjs` → **26 PASS / 0 FAIL**: one real `--update` of `web-test`,
+  D1 census `{"settings":6,"users":1}` identical before/after, deployed bytes exactly what the
+  saved seed reproduces from the shipped source, `/panel` 200 (25940 B), `/sub/unknown` 404,
+  `/api/users` 401 without a session, `/sub/finaluser` still serves VLESS + Trojan + Shadowsocks.
+* `node tools/live-ech-check.mjs` → **31 PASS / 0 FAIL**: ECH toggled on for the real user, all
+  generated links on TLS ports carrying `ech=` + `sni=crypto.cloudflare.com`, `ech-opts` +
+  `query-server-name` in the Clash output, valid `/sings/` JSON with the ECH block in every
+  outbound; toggled back off, all `ech=` removed, port set restored.
+* `node tools/first-run-probe.mjs`, `node tools/diagnose-1101.mjs web-test` → all routes 200/401,
+  **no 1101 anywhere**.
+* Worker inventory untouched: `web-bistori`, `web-test`, `web-bess`, `web-panel`, each with one
+  `d1:DB` binding and compat `2024-09-23`. No worker, database, domain or address was deleted.
+
+### 3. Delivery
+This folder is now a git repository on branch **`night-shift/2026-10-11`** (commit `820ae24a`),
+pushed to the fork `axionspace/Z-E-U-S` — **main untouched**, no force-push, ahead-by-2 of main.
+The branch adds: `.gitignore`, `PROGRESS.md`, `analysis/CFNEW-STUDY.md`, `docs/ECH.md`, the
+rewritten `wizard/wizard.mjs` (plus `wizard/zeus-wizard.mjs`, byte-identical — a regression test
+guards the pair), the new `Source.js` (the ECH build), and 11 new/updated tools.
+Verified on the branch: wizard has the raw-mode token reader + Farsi UI + `--help`;
+`Source.js` 871,154 B with **0 keyword survivors**; `docs/ECH.md` and `PROGRESS.md` present;
+**no profile.json, log, backup, panel-* or test-state file on the branch**.
+`tools/harden.mjs` on the branch matches the fork's published blob `992cb1a112` exactly.
+
+Credentials: both tokens were read from the environment only. `GITHUB_TOKEN` was used solely in
+an `Authorization` header; the temporary git askpass/credential-helper scripts were deleted, and
+the remote URL contains no credentials. `ZEUS_CF_TOKEN` was used only via `Authorization:
+Bearer …` headers from Node scripts. No token appears in any file, log or commit message in this
+folder, and every masked display in the output used `••••`.
+
+### 4. Working tree
+`PROGRESS.md` is the single source of truth and complete. The working tree is clean with respect
+to the committed delivery set (`git status` shows only the ignored/untracked working material:
+task spec, audit logs, backup dumps, panel-* working folders and tooling state — all excluded by
+`.gitignore` by design, because they carry live account/database identifiers and are not part of
+the product).
+
+One correction on the record: while building the branch, the local `wizard/profile.json`
+(a per-install profile holding an account id, a worker name and a database uuid — never a
+token) was removed by a `git checkout` of the fork tree and was recreated verbatim from the
+content read in Phase 0. It carries no secret, and it is excluded from the branch.
