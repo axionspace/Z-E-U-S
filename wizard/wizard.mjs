@@ -237,7 +237,7 @@ async function askSecret(rl, q) {
     };
     process.stdout.write(prompt);
     stdin.setEncoding('utf8');
-    readline.emitKeypressEvents(stdin);
+    emitKeypressEvents(stdin);
     stdin.on('keypress', onKey);
     process.on('exit', onExit);
     stdin.setRawMode(true);

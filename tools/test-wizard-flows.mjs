@@ -547,6 +547,42 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S19 TTY token prompt
+  console.log('• S19 the interactive hidden-token prompt actually works on a TTY');
+  {
+    // Regression test for the live-installer crash
+    // "TypeError: readline.emitKeypressEvents is not a function": the piped-input
+    // tests above never execute the raw-mode branch, so only this test drives it —
+    // with a fake TTY stdin that records what the reader draws.
+    const wizTxt = readFileSync(WIZARD_SRC, 'utf8');
+    check(/from 'node:readline'/.test(wizTxt) && !/readline\.emitKeypressEvents/.test(wizTxt), 'S19 keypress wiring comes from core node:readline (the promises API has no emitKeypressEvents)');
+    const { askSecret } = await import('../wizard/zeus-wizard.mjs');
+    const { EventEmitter } = await import('node:events');
+    const realStdin = process.stdin;
+    const realWrite = process.stdout.write.bind(process.stdout);
+    let drawn = '';
+    const fakeStdin = Object.assign(new EventEmitter(), {
+      isTTY: true,
+      setRawMode() {}, setEncoding() {}, resume() {}, pause() {},
+    });
+    Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+    process.stdout.write = (c) => { drawn += String(c); return true; };
+    let got = null, threw = null;
+    try {
+      const p = askSecret(null, 'Enter your Cloudflare API token');
+      // NOTE: no DESTRUCTURING of the fake — emitKeypressEvents(fakeStdin) must not throw.
+      fakeStdin.emit('keypress', 's3cr3t-t0k3n', { name: 'x' });
+      fakeStdin.emit('keypress', '\r', { name: 'return' });
+      got = await p;
+    } catch (e) { threw = e; }
+    Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+    process.stdout.write = realWrite;
+    check(threw === null, 'S19 the TTY prompt runs without throwing', threw && String(threw).slice(0, 160));
+    check(got === 's3cr3t-t0k3n', 'S19 pasted keypresses accumulate into the returned token', JSON.stringify(got));
+    check(drawn.includes('••••••••') && !drawn.includes('s3cr3t-t0k3n'), 'S19 only the fixed mask is drawn, never the typed value');
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S16 binding fix
   console.log('• S16 a missing D1 binding is re-pinned without deleting anything');
   {

@@ -527,3 +527,41 @@ was rewritten and nothing was force-pushed). Verified afterwards: `main` and
 serves the English wizard (no Persian script, `--doctor` + `nodejs_compat` present);
 `main/Source.js` serves 871,154B with 0 keyword survivors. The one-command installer URLs
 therefore now deliver the fixed wizard. Local `e9cf2cc` content == pushed content.
+
+---
+
+## 2026-10-11 — live-installer crash fix: `readline.emitKeypressEvents is not a function`
+
+### What the owner hit
+Running `irm .../main/wizard/install.ps1 | iex` on Node v24.18.0 crashed at the token
+prompt: `TypeError: readline.emitKeypressEvents is not a function` at `askSecret`.
+The install died at step [1/10] — before any Cloudflare call.
+
+### Root cause (mine, in the English rewrite)
+`emitKeypressEvents` lives on core `node:readline`, NOT on `node:readline/promises`
+(proven: `typeof promises.emitKeypressEvents === 'undefined'`). The rewrite imported it
+correctly but the call site still read it off the promises default import, so every real
+interactive run threw. The offline suite never caught it because all piped-input tests take
+the non-TTY branch — the raw-mode branch only executes on a live terminal.
+
+### Fix (`wizard/zeus-wizard.mjs`, 2 lines)
+Call the already-imported `emitKeypressEvents(stdin)` from `node:readline` instead of
+`readline.emitKeypressEvents(stdin)`. `readline.createInterface` stays on the promises
+import (correct there). `wizard/wizard.mjs` re-synced byte-identical.
+
+### Regression test (new S19 in `tools/test-wizard-flows.mjs`, 4 checks)
+Drives the real TTY branch with a fake stdin (EventEmitter + `isTTY`/`setRawMode`): pastes
+keypresses, presses return, and asserts (1) no throw, (2) the returned token equals the
+typed keys, (3) only the `••••••••` mask is drawn, never the value, plus a static assertion
+that the wiring comes from core `node:readline`. On the old code this fails with exactly
+the owner's `TypeError`.
+
+### Verification
+`test-wizard-flows` **170/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+Pushed to both `night-shift/2026-10-11` and `main` (fast-forward, no force); verified `main`
+serves the fixed wizard. Owner workaround no longer needed, but noted: setting
+`ZEUS_CF_TOKEN` in the environment skips the interactive token prompt entirely.
+Owner action: re-run the same `irm ... | iex` one-liner — it downloads the fixed wizard.
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`.
