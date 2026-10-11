@@ -962,6 +962,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   }
   if (!canHeal) return { ok: false, state: verdict, healed: false, rebuilt: null };
   // --- the panel says its D1 binding is missing: re-pin it, no delete needed.
+  // (Also gated by canHeal: the post-heal re-check below must only look, never heal again.)
   if (verdict === 'binding') {
     warn('The panel answers but reports its database binding is missing — the edge has not picked up the D1 attachment yet.');
     console.log('  💬 The panel reports its database binding is missing — re-attaching the same D1 database now (nothing is deleted).');

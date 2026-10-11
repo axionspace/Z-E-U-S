@@ -565,3 +565,42 @@ Owner action: re-run the same `irm ... | iex` one-liner — it downloads the fix
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
+
+---
+
+## 2026-10-11 — "lots of bugs" sweep: installer download gate + doctor coverage
+
+### What was done (owner ran the fixed wizard and reported more bugs, no transcript)
+Offline suite was already green, so the hunt focused on code paths no test ever
+executes: the two one-command installers and the new `--doctor` mode.
+
+### Bugs found and fixed
+1. **Installers trusted the first download blindly** (`install.sh` + `install.ps1`).
+   Only check was non-empty (`[ -s ]` / try-catch) — a truncated file or an HTML
+   error page from a mirror would be executed and die with a cryptic error far from
+   the cause. Both installers now validate every mirror download the same three
+   ways before running it: size > 51,200 bytes, contains the `Zeus Install Wizard`
+   marker, and passes `node --check` with the selected runtime; anything else moves
+   to the next mirror automatically. Verified: good file ACCEPTED, truncated and
+   wrong-content files REJECTED; `bash -n` + PowerShell parser both clean.
+2. **`--doctor` had zero coverage.** Added S20: runs the real doctor against the mock
+   with a pre-seeded healthy worker and asserts exit 0, `verdict: ok`, settings/D1/
+   bytes sections present — and that it uploads nothing and deletes nothing
+   (read-only proof). Passed first try: **9/9**, suite now **181/0**.
+3. Clarified the `canHeal` gate comment in `verifyDeployment` (behavior already
+   correct: the post-heal re-check only looks, never heals again).
+
+### Not bugs (verified while hunting)
+* Full mock install transcript read end-to-end: clean English, correct order, D1
+  gate → fingerprint → upload → settings confirm → read-back → profile → probe →
+  summary. (Box glyphs in some consoles are just missing emoji fonts.)
+* Piped-input,Zone-ID fallback, D1-cap, rotate, no-profile, census-fail paths all
+  covered green. Personalize 104/0, ECH 41/0, cfnew-wins 21/0, bench unchanged.
+* Still not live-proven (no `ZEUS_CF_TOKEN` in this session): if the owner still sees
+  failures, the single most useful artifact is the failing step's output or a
+  `--doctor <worker>` transcript — that names the exact class.
+
+Files changed: `install.sh`, `install.ps1`, `wizard/zeus-wizard.mjs` (comment),
+`wizard/wizard.mjs` (re-sync), `tools/test-wizard-flows.mjs` (S20 + S8 installer
+gate checks). Installers are new to the delivery set (previously inherited from
+`main` unchanged).

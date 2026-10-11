@@ -636,6 +636,29 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S20 doctor
+  console.log('• S20 --doctor diagnoses a worker without changing anything');
+  {
+    const { server, state, port } = await startMock({ dbs: [{ name: 'doc-db', uuid: DB_UUID }] });
+    state.scripts['doc-worker'] = {
+      bytes: Buffer.from(CANON),
+      metadata: { bindings: [{ type: 'd1', name: 'DB', id: DB_UUID }], compatibility_date: REQUIRED_COMPAT_DATE, compatibility_flags: [...REQUIRED_COMPAT_FLAGS] },
+    };
+    writeFileSync(profPath, JSON.stringify({ version: 1, seed: 'ab'.repeat(16), fingerprint: true, accountId: ACCOUNT_ID, workerName: 'doc-worker', dbName: 'doc-db', dbId: DB_UUID, subdomain: SUB, installedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }));
+    const r = await run(root, port, ['--doctor'], [TOKEN, '']);
+    check(!r.fatal && r.code === 0, 'S20 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Doctor mode: read-only diagnosis'), 'S20 announces read-only mode');
+    check(r.out.includes('compatibility_date') && r.out.includes('compatibility_flags'), 'S20 reports the runtime metadata');
+    check(r.out.includes('D1 binding') && r.out.includes('tables'), 'S20 reports the binding and the D1 census');
+    check(r.out.includes('payload table') && r.out.includes('module export'), 'S20 reports the deployed bytes');
+    check(r.out.includes('verdict: ok'), 'S20 reaches the ok verdict on a healthy worker', r.out.match(/verdict:.*/)?.[0]);
+    check(r.out.includes('nothing to fix'), 'S20 says nothing to fix');
+    check(state.puts.length === 0, 'S20 uploads nothing (read-only)', 'PUTs=' + state.puts.length);
+    check(state.deletes.length === 0, 'S20 deletes nothing (read-only)', JSON.stringify(state.deletes));
+    server.close();
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');
@@ -654,6 +677,10 @@ try {
     check(REQUIRED_COMPAT_DATE === '2026-07-10' && REQUIRED_COMPAT_FLAGS.join(',') === 'nodejs_compat', 'S8 the required runtime values match the panel OTA updater', REQUIRED_COMPAT_DATE + ' ' + REQUIRED_COMPAT_FLAGS.join(','));
     check(typeof classifyDeployment === 'function', 'S8 classifyDeployment is exported and testable');
     check(wizTxt.includes('--doctor') && wizTxt.includes('function doctorMain('), 'S8 the read-only doctor mode exists');
+    const shTxt = readFileSync(join(PROJECT, 'install.sh'), 'utf8');
+    const psTxt = readFileSync(join(PROJECT, 'install.ps1'), 'utf8');
+    check(shTxt.includes('--check') && shTxt.includes('51200') && shTxt.includes('Zeus Install Wizard'), 'S8 install.sh validates the wizard download (size + marker + syntax) before running it');
+    check(psTxt.includes('--check') && psTxt.includes('51200') && psTxt.includes('Zeus Install Wizard'), 'S8 install.ps1 validates the wizard download (size + marker + syntax) before running it');
     check(wizTxt.includes('canHeal: false') && (wizTxt.match(/canHeal/g) || []).length >= 3, 'S8 the self-heal is capped at one attempt (no recursion)');
     check((wizTxt.match(/method: 'DELETE'/g) || []).length === 1, 'S8 exactly one DELETE exists in the wizard (the worker-script self-heal)', String((wizTxt.match(/method: 'DELETE'/g) || []).length));
     check(!/d1\/database\/[^`'"]*\\?`[^`]*method:\s*'DELETE'/.test(wizTxt) && !/d1\/database\/\$\{dbId\}`,\s*\{\s*method:\s*'DELETE'/.test(wizTxt), 'S8 no DELETE is ever issued against a database');
