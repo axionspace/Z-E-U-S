@@ -731,6 +731,31 @@ async function settleDeploy(fresh) {
   await new Promise((r) => setTimeout(r, wait));
 }
 
+// Best-effort DNS gate: does the public hostname resolve yet? Uses DoH (overridable
+// via ZEUS_DOH_URL, default Cloudflare) so a lying local resolver can't fake it, sends
+// zero traffic to the worker itself (nothing to poison), and NEVER fails the install:
+// filtered networks often can't reach DoH at all, so a miss just warns and moves on.
+async function awaitRouteDns(hostname) {
+  const doh = (process.env.ZEUS_DOH_URL || 'https://cloudflare-dns.com/dns-query').replace(/\/+$/, '');
+  for (let t = 0; t < 5; t++) {
+    try {
+      const r = await fetch(doh + '?name=' + encodeURIComponent(hostname) + '&type=A', {
+        headers: { accept: 'application/dns-json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      const j = await r.json().catch(() => null);
+      const answers = (j && j.Answer) || [];
+      if (r.ok && answers.some((a) => a && a.data)) {
+        ok('Route DNS resolves: ' + hostname);
+        return true;
+      }
+    } catch {}
+    if (t < 4) await new Promise((r) => setTimeout(r, 3000));
+  }
+  warn('Route DNS not visible yet for ' + hostname + ' — continuing anyway (filtered networks often block DNS checks; the HTTP check below decides).');
+  return false;
+}
+
 // Occasionally a freshly created worker on an account starts answering error 1101 on
 // every route even though the very same bytes run fine under a different name — a
 // one-off deploy state on Cloudflare's side. Deleting the worker and deploying again
@@ -1051,7 +1076,16 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
   const retry = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
   if (retry.verdict === 'ok') { ok('Re-upload worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
-  warn('Re-upload alone did not clear it (' + retry.verdict + ') — falling through to recreating the worker script.');
+  warn('Re-upload alone did not clear it (' + retry.verdict + ') — checking the route attachment next (still no delete).');
+  // Middle rung: maybe the address was never attached to this version at all (the
+  // enable POST raced the upload). Re-apply the enable, confirm via DNS, re-probe.
+  // If THIS heals it, the delete below was never necessary — and we learn the class.
+  const re = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
+  if (!re.ok) warn('Subdomain re-enable reported (' + re.errors + ') — continuing to the checks below regardless.');
+  await awaitRouteDns(workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
+  const routed = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
+  if (routed.verdict === 'ok') { ok('Route fix worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
+  warn('Route is attached but the version still fails (' + routed.verdict + ') — falling through to recreating the worker script.');
   const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
   if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false, rebuilt: null }; }
   ok('Worker script removed; the database ' + (dbName || 'DB') + ' was not touched');
@@ -1263,6 +1297,19 @@ async function main() {
   }
   if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
   else ok('Enabled: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
+  // Verify the route actually attached (cheap DNS check, zero worker traffic). If the
+  // enable POST raced the upload and never took, re-apply it once here — a detached
+  // route is otherwise indistinguishable from a stuck deploy later, and this is the
+  // only moment it can be fixed without any delete.
+  const routeHost = workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev';
+  if (en.ok && !(await awaitRouteDns(routeHost))) {
+    warn('Re-applying the address enable once, then re-checking the route…');
+    const en2 = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
+      method: 'POST', body: { enabled: true, previews_enabled: false },
+    });
+    if (en2.ok) await awaitRouteDns(routeHost);
+    else warn('Subdomain re-enable reported (' + en2.errors + ') — you can enable it from the dashboard if needed.');
+  }
 
   // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
   nextStep('Final check & summary');
@@ -1567,7 +1614,7 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, awaitRouteDns, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
 
 // Help, so a first-time owner knows what every flag does before running it.
 function helpText() {
