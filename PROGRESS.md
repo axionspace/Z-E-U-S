@@ -604,3 +604,53 @@ Files changed: `install.sh`, `install.ps1`, `wizard/zeus-wizard.mjs` (comment),
 `wizard/wizard.mjs` (re-sync), `tools/test-wizard-flows.mjs` (S20 + S8 installer
 gate checks). Installers are new to the delivery set (previously inherited from
 `main` unchanged).
+
+---
+
+## 2026-10-11 — token echo + silent exit on real Windows terminal (owner transcript)
+
+### What the owner showed
+A live run on PowerShell/Node 24: the pasted token appeared in CLEARTEXT on the
+prompt line (`cfut_ClND…`), the mask redraw garbled over it, and after `[3/10]`
+asked `Worker name`, the wizard vanished back to the shell with no error.
+**The pasted token is compromised by the echo — owner must revoke it in the
+Cloudflare dashboard (API Tokens → delete) and create a new one.**
+
+### Root causes (both in `askSecret`'s raw-mode branch)
+1. **Echo not suppressed.** `setRawMode(true)` does not suppress console echo on
+   every Windows setup (seen live). The old redraw (`\r` + space-padding sized by
+   the mask text only) could never erase echoed token characters it never counted
+   — hence cleartext token + garbled double mask in the transcript.
+2. **Silent death after the prompt.** `restoreTty()` called `process.stdin.pause()`
+   mid-run; on Windows that can drain the event loop, so the wizard exited with no
+   message at the very next `rl.question` — exactly the transcript's symptom.
+
+### Fixes (`wizard/zeus-wizard.mjs`)
+* Every keypress now repaints via `clearLine(stdout, 0)` + `cursorTo(stdout, 0)`
+  (core `node:readline`, works on conhost and Windows Terminal) and only then draws
+  the fixed mask — any console-echoed characters are wiped on the spot, and the
+  final repaint on Enter leaves nothing readable behind. The racy 150ms interval
+  redraw is gone (paint-on-keypress instead); backspace repaints too (stale mask
+  bug). Ctrl+C behavior unchanged.
+* `restoreTty()` only restores the raw flag now — it never pauses stdin mid-run.
+  Pausing still happens explicitly on real exit paths (`fail()`, final cleanups),
+  which already pause/close themselves.
+* Safest route documented in the reply: set `ZEUS_CF_TOKEN` in the environment
+  before running the one-liner — the interactive prompt (and any echo) is skipped
+  entirely.
+
+### Regression coverage (S19 extended, 7 checks)
+Fake TTY stdin now also records `pause()`/`setRawMode()` calls and the suite asserts:
+line-clear escapes present in every repaint, mask-only drawing, backspace handling,
+returned token correctness, **zero pauses mid-run**, raw mode on-then-off. All would
+have failed on the old code (echo residue by construction, `pause: 1`).
+
+### Verification
+`test-wizard-flows` **184/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+`wizard/wizard.mjs` re-synced. Pushed to both refs (fast-forward); verified `main`
+serves the fixed wizard (no `readline.emitKeypressEvents`, line-clear repaint
+present, still Farsi-free). Owner action: revoke the echoed token, re-run the
+one-liner (optionally with `ZEUS_CF_TOKEN` set).
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`.

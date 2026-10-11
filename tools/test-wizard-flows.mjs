@@ -561,25 +561,32 @@ try {
     const realStdin = process.stdin;
     const realWrite = process.stdout.write.bind(process.stdout);
     let drawn = '';
+    let paused = 0;
+    const rawModes = [];
     const fakeStdin = Object.assign(new EventEmitter(), {
       isTTY: true,
-      setRawMode() {}, setEncoding() {}, resume() {}, pause() {},
+      setRawMode(v) { rawModes.push(v); }, setEncoding() {}, resume() {}, pause() { paused++; },
     });
     Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
     process.stdout.write = (c) => { drawn += String(c); return true; };
     let got = null, threw = null;
     try {
       const p = askSecret(null, 'Enter your Cloudflare API token');
-      // NOTE: no DESTRUCTURING of the fake — emitKeypressEvents(fakeStdin) must not throw.
+      // NOTE: no destructuring of the fake — emitKeypressEvents(fakeStdin) must not throw.
       fakeStdin.emit('keypress', 's3cr3t-t0k3n', { name: 'x' });
+      fakeStdin.emit('keypress', '', { name: 'backspace' });
+      fakeStdin.emit('keypress', 'n', { name: 'n' });
       fakeStdin.emit('keypress', '\r', { name: 'return' });
       got = await p;
     } catch (e) { threw = e; }
     Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
     process.stdout.write = realWrite;
     check(threw === null, 'S19 the TTY prompt runs without throwing', threw && String(threw).slice(0, 160));
-    check(got === 's3cr3t-t0k3n', 'S19 pasted keypresses accumulate into the returned token', JSON.stringify(got));
-    check(drawn.includes('••••••••') && !drawn.includes('s3cr3t-t0k3n'), 'S19 only the fixed mask is drawn, never the typed value');
+    check(got === 's3cr3t-t0k3n', 'S19 pasted keypresses accumulate into the returned token (backspace deletes one char)', JSON.stringify(got));
+    check(drawn.includes('••••••••') && !drawn.includes('s3cr3t-t0k3n') && !drawn.includes('s3cr3t-t0k3'), 'S19 only the fixed mask is drawn, never the typed value');
+    check(/\[/.test(drawn), 'S19 every repaint clears the whole line first (erases console-echoed keys too)');
+    check(paused === 0, 'S19 stdin is never paused mid-run (pausing drained the loop on Windows and killed the wizard at the next prompt)', 'pause calls: ' + paused);
+    check(rawModes.length > 0 && rawModes[rawModes.length - 1] === false, 'S19 raw mode is switched on, then restored off at the end', JSON.stringify(rawModes));
     console.log('');
   }
 

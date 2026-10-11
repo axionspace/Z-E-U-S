@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { randomInt, createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
-import { emitKeypressEvents } from 'node:readline';
+import { emitKeypressEvents, clearLine, cursorTo } from 'node:readline';
 import { Writable } from 'node:stream';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -170,7 +170,7 @@ async function ask(rl, q, def = '') {
 function maskSecret(t) {
   return t.length ? '••••••••   (received, ' + t.length + ' chars)' : '(nothing received — try pasting again)';
 }
-// Reading a secret so that NOTHING the user types is echoed to the terminal.
+// Reading a secret so that NOTHING the user types stays on the terminal.
 //
 // The previous implementation muted readline's output stream. On Windows PowerShell and
 // cmd/conhost that is not enough: the console echoes the keys itself, so a pasted API
@@ -178,9 +178,18 @@ function maskSecret(t) {
 // POSIX it clears ECHO, and on Windows setRawMode(true) clears ENABLE_ECHO_INPUT — so the
 // OS stops printing the keys and this process decides what to draw: a fixed mask that
 // never grows with the input, and never the value itself.
+//
+// Belt and suspenders: some Windows setups echo keys even in raw mode (seen live with a
+// pasted token). So every keypress repaints the whole physical line — clearLine +
+// cursorTo erase the entire line first, wiping any echoed characters immediately — and
+// only the fixed mask is ever redrawn. Pressing Enter repaints once more, so nothing
+// readable is left behind even where echo could not be suppressed.
 function restoreTty() {
+  // NOTE: only the raw flag is restored here — never pause stdin mid-run. Pausing the
+  // input stream after the token prompt used to drain the event loop on Windows, which
+  // killed the wizard silently at the very next question. Pausing happens only on real
+  // exit paths (fail(), final cleanup), which pause explicitly themselves.
   try { if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false); } catch {}
-  try { process.stdin.pause(); } catch {}
 }
 async function askSecret(rl, q) {
   const label = 'Paste your Cloudflare API token here and press Enter';
@@ -211,29 +220,28 @@ async function askSecret(rl, q) {
     const stdin = process.stdin;
     const prompt = '  ' + label + '\n    ' + q + ': ';
     let value = '';
-    let shown = 0;
-    let timer = null;
-    const draw = () => {
+    const paint = () => {
       const dots = '•'.repeat(value.length ? 8 : 0);
       const txt = value.length ? dots + '   (received, ' + value.length + ' chars)'
         : '(typing is hidden — paste the token and press Enter)';
-      if (shown) process.stdout.write('\r' + ' '.repeat(shown) + '\r');
-      shown = txt.length;
+      // Erase the whole physical line first: this wipes any characters the console
+      // echoed itself (raw mode does not suppress echo on every Windows setup).
+      try { clearLine(process.stdout, 0); cursorTo(process.stdout, 0); }
+      catch { process.stdout.write('\r'); }
       process.stdout.write(txt);
     };
     const cleanup = () => {
       stdin.removeListener('keypress', onKey);
       process.removeListener('exit', onExit);
-      if (timer) clearInterval(timer);
       restoreTty();
     };
     const onExit = () => restoreTty();
     const onKey = (str, key) => {
-      if (key && key.name === 'return') { cleanup(); process.stdout.write('\n  ' + maskSecret(value.trim()) + '\n'); resolve(value.trim()); return; }
+      if (key && key.name === 'return') { cleanup(); paint(); process.stdout.write('\n  ' + maskSecret(value.trim()) + '\n'); resolve(value.trim()); return; }
       // Ctrl+C must always work, even while the terminal is in raw mode
       if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
-      if (key && key.name === 'backspace') { if (value.length) value = value.slice(0, -1); return; }
-      if (str && !(key && key.ctrl)) value += str;
+      if (key && key.name === 'backspace') { if (value.length) value = value.slice(0, -1); paint(); return; }
+      if (str && !(key && key.ctrl)) { value += str; paint(); }
     };
     process.stdout.write(prompt);
     stdin.setEncoding('utf8');
@@ -242,8 +250,6 @@ async function askSecret(rl, q) {
     process.on('exit', onExit);
     stdin.setRawMode(true);
     stdin.resume();
-    timer = setInterval(() => { if (value.length) draw(); }, 150);
-    if (timer.unref) timer.unref();
   });
 }
 
