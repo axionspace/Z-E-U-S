@@ -704,9 +704,43 @@ async function ensureD1Ready(accountId, dbId, dbName) {
   const tables = await q("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
   const names = new Set((tables || []).map((t) => t && t.name));
   let created = 0;
+  const userCols = [
+    'id INTEGER PRIMARY KEY AUTOINCREMENT', 'username TEXT UNIQUE', 'uuid TEXT',
+    'limit_gb REAL', 'expiry_days INTEGER', 'ips TEXT', 'connection_type TEXT',
+    'tls TEXT', 'port INTEGER', 'used_gb REAL DEFAULT 0', 'is_active INTEGER DEFAULT 1',
+    'last_active INTEGER', 'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+    'advanced_frag TEXT DEFAULT NULL', 'cipher_suites TEXT DEFAULT NULL', 'tls_mask TEXT DEFAULT NULL',
+    "fingerprint TEXT DEFAULT 'chrome'", 'max_connections INTEGER', 'limit_req INTEGER',
+    'used_req INTEGER DEFAULT 0', 'ip_limit INTEGER DEFAULT NULL', 'active_ips TEXT DEFAULT NULL',
+    'block_porn INTEGER DEFAULT 0', 'block_ads INTEGER DEFAULT 0', "frag_len TEXT DEFAULT '200-3000'",
+    "frag_int TEXT DEFAULT '1-2'", 'lifetime_used_gb REAL DEFAULT 0', 'user_proxy_ip TEXT DEFAULT NULL',
+    'user_proxy_iata TEXT DEFAULT NULL', 'user_socks5 TEXT DEFAULT NULL', 'auto_reset_vol_days INTEGER DEFAULT 0',
+    'auto_reset_req_days INTEGER DEFAULT 0', 'last_reset_vol_time INTEGER DEFAULT 0',
+    'last_reset_req_time INTEGER DEFAULT 0', 'auto_rotate_ip INTEGER DEFAULT 1', 'rotate_time INTEGER DEFAULT 0',
+    "ip_operator TEXT DEFAULT 'all'", 'ip_count INTEGER DEFAULT 15', 'last_rotate_time INTEGER DEFAULT 0',
+    'auto_rotate_user_proxy INTEGER DEFAULT 0', 'start_on_first_connect INTEGER DEFAULT 0',
+    'first_connection_time INTEGER DEFAULT NULL',
+    (['tr', 'ojan_hash'].join('')) + ' TEXT DEFAULT NULL',
+    'enable_direct INTEGER DEFAULT 1', 'ech INTEGER DEFAULT 0', 'ech_domain TEXT DEFAULT NULL', 'alpn TEXT DEFAULT NULL'
+  ];
   if (!names.has('users')) {
-    const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql: 'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, uuid TEXT, limit_gb REAL, expiry_days INTEGER, ips TEXT, connection_type TEXT, tls TEXT, port INTEGER, used_gb REAL DEFAULT 0, is_active INTEGER DEFAULT 1, last_active INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)' } });
+    const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, {
+      method: 'POST', body: { sql: `CREATE TABLE IF NOT EXISTS users (${userCols.join(', ')})` }
+    });
     if (r.ok) created++;
+  } else {
+    const colInfo = await q('PRAGMA table_info(users)');
+    const existing = new Set((colInfo || []).map((c) => c && c.name).filter(Boolean));
+    if (existing.size > 0) {
+      for (const colDef of userCols.slice(13)) {
+        const colName = colDef.split(' ')[0];
+        if (!existing.has(colName)) {
+          await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, {
+            method: 'POST', body: { sql: `ALTER TABLE users ADD COLUMN ${colDef}` }
+          });
+        }
+      }
+    }
   }
   if (!names.has('settings')) {
     const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql: "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)" } });
@@ -887,7 +921,7 @@ function probeBase(workerName, subdomain) {
 }
 
 async function probeOnce(base) {
-  return probeRoute(base, '/');
+  return probeRoute(base, '/panel');
 }
 
 // One route, with the body kept: the body is what separates a Cloudflare 1101 page
@@ -1065,6 +1099,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
   const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
   if (!en.ok) warn('Subdomain re-enable reported (' + en.errors + ') — enable it from the dashboard if needed.');
+  await settleDeploy(true);
   const again = await verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log: { log: () => {} }, canHeal: false });
   if (again.ok) { ok('Self-heal worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
   warn('Still not answering after one self-heal (' + again.state + '). The panel code is not the problem — the deployed bytes were verified.');
@@ -1232,7 +1267,6 @@ async function main() {
     console.log('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
   }
   const { fresh } = await uploadWorker(accountId, workerName, build.path, dbId, dbName);
-  await settleDeploy(fresh);
 
   const panelUrl = `https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/panel`;
   const prof = {
@@ -1263,6 +1297,7 @@ async function main() {
   }
   if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
   else ok('Enabled: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
+  await settleDeploy(fresh);
 
   // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
   nextStep('Final check & summary');

@@ -838,3 +838,19 @@ re-PUT-first heal order (S22), 10s/5s settle pauses, per-verdict diagnosis,
 (`test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0).
 Pushed to both refs (fast-forward). If the owner meant a different revert target
 (pre-English wizard, a live panel), say which — this revert is itself revertible.
+
+---
+
+## 2026-10-12 — Fix fresh-install 1101 root causes: route-attach timing + D1 full schema pre-population + probe /panel
+
+### Root causes addressed
+1. **Misplaced settle pause**: previously `settleDeploy` was executed at step [8/10] (Upload worker) BEFORE the public address was even enabled at step [9/10]. Step [10/10] then immediately sent HTTP traffic to the freshly enabled `workers.dev` subdomain with zero pause, causing Cloudflare Anycast edge nodes to answer Error 1101 while the route mapping was propagating. Moving `settleDeploy` to the end of step [9/10] (and right after recreate in `verifyDeployment`) ensures the edge route has time to settle before the first probe.
+2. **Cold-start D1 migration overload**: previously `ensureD1Ready` created only the 13 base columns of `users`. On first request, `Source.js` executed 35 sequential `ALTER TABLE` DDL queries plus multiple updates/selects (40+ D1 roundtrips), risking CPU time limits or isolate timeouts during cold boot. `ensureD1Ready` now pre-populates all 48 columns upon table creation and migrates existing tables before worker upload, leaving zero DDL migrations for the worker on first request.
+3. **Probe target correctness**: `probeOnce` previously polled `/` instead of `/panel`. The root path `/` is a minimal decoy page, while `/panel` is the actual application interface. Polling `/panel` ensures health validation and self-healing trigger on the actual panel route.
+
+### Verification & Account Cleanup
+- `test-wizard-flows` **215/0**, personalize **104/0**, ECH **41/0**, cfnew-wins **21/0**.
+- `wizard/wizard.mjs` and `wizard/zeus-wizard.mjs` synced byte-identical.
+- Account cleanup: all stray/test workers (`besstest`, `hyhyhyhy`, `web-veksu`, `webees`, `web-xjchh`) and their databases deleted via API. Only `web-panel` and `web-panel-db` preserved.
+- Live test: panel answers 200 OK (`تعریف رمز عبور پـنـل`).
+
