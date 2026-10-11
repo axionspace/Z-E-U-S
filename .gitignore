@@ -1,0 +1,40 @@
+# Delivery .gitignore
+#
+# This folder is the working scope of the night-shift run; the pushed branch carries the
+# fork's product plus the changes, and nothing else. Everything below either carries live
+# account/database identifiers, an un-hardened copy of the panel source, tooling state, or
+# a transient build artefact — none of it belongs in a public branch.
+
+# --- never publish these: they hold live account ids / database uuids -------------
+**/profile.json
+*.log
+audit-*.log
+sweep-*.log
+
+# --- never publish the un-hardened panel source or a personalised build ----------
+analysis/Source.js
+analysis/_upstream/**
+Source-hardened.js
+Source-personalized.js
+test/Source-personalized.js
+test/Source-web-bess.js
+test/Source-personalized.js
+
+# --- tooling state / fixtures (miniflare, wrangler, backups, live dump folders) ---
+test/**
+backup/**
+panel-live/**
+panel-web-test/**
+panel-web-bess/**
+.wrangler/**
+.state-*/**
+.venv/**
+
+# --- build environment -----------------------------------------------------------
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# --- working folders the wizard/tools create ------------------------------------
+.runtime/
