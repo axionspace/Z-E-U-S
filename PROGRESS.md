@@ -433,3 +433,85 @@ One correction on the record: while building the branch, the local `wizard/profi
 (a per-install profile holding an account id, a worker name and a database uuid — never a
 token) was removed by a `git checkout` of the fork tree and was recreated verbatim from the
 content read in Phase 0. It carries no secret, and it is excluded from the branch.
+
+---
+
+## 2026-10-11 — English-only wizard + 1101 root-cause follow-up (owner report: fresh panels still 1101)
+
+### What the owner reported
+Fresh wizard installs still answer `error code: 1101` on every route even though the upload
+is byte-verified — so the old "one-off poisoned deploy state, delete + redeploy identical
+bytes" story cannot be the whole truth. Investigated from the code (no CF token in this
+session, so every claim below is either proven offline or marked as needing the live check).
+
+### Root causes found (all in the wizard's deploy path, none in the panel logic)
+1. **Stale runtime metadata on fresh installs.** The wizard uploaded new workers with
+   `compatibility_date: '2024-09-23'` and NO `compatibility_flags`, while the panel's own
+   OTA updater deploys with `compatibility_date: '2026-07-10'` + `["nodejs_compat"]`
+   (`analysis/Source.js` OTA metadata block). A worker that throws during module evaluation
+   answers 1101 on every route — with perfectly fine bytes.
+2. **Flags silently dropped on update.** `uploadWorker` preserved `compatibility_date` but
+   never read or sent `compatibility_flags`, so `--update` stripped `nodejs_compat` from
+   panels that had it (including panels the in-panel updater had just repaired).
+3. **Settings never verified after PUT.** The wizard declared success after the byte
+   read-back without ever confirming the D1 binding/date/flags landed at the edge.
+4. **One diagnosis for three different failures.** The health probe polled only `/` and
+   treated the panel's own 500 "Database binding 'DB' is missing" and 503 "Cloudflare D1
+   Quota Exceeded" (integrity tripwire) exactly like a Cloudflare 1101 page — then
+   "healed" them by re-uploading identical bytes, which cannot fix either one.
+5. **Fresh empty D1 raced first requests.** A brand-new database has no tables until the
+   panel migrates on first request; the wizard uploaded and probed without ever ensuring
+   the schema existed.
+
+### Fixes (all in `wizard/zeus-wizard.mjs`, panel logic untouched)
+* Fresh installs deploy with `2026-07-10` + `nodejs_compat` (new `REQUIRED_COMPAT_DATE` /
+  `REQUIRED_COMPAT_FLAGS`, exported and asserted). Updates keep a newer date, upgrade an
+  older one (announced), and union flags — never downgrade, never drop.
+* After every PUT the wizard polls worker settings until the D1 binding id, date and flags
+  read back as sent (up to ~30s), re-applies the same metadata once if they don't settle,
+  then does the byte read-back as before.
+* New `ensureD1Ready()`: connectivity check + `SELECT` on `sqlite_master`, creating the two
+  base tables with the panel's own `CREATE TABLE IF NOT EXISTS` statements when missing.
+  Read/create only — never deletes. Runs in install and update before the upload.
+* New three-route diagnosis (`probeRoute`/`probeAll`/`classifyDeployment`, all exported):
+  `ok` / `binding` / `integrity` / `stuck` (true 1101 page) / `propagating` / `partial` /
+  `other`. The fast poll still watches `/`; a full pass decides.
+* `verifyDeployment` now heals per verdict: binding → re-PUT with the binding pinned (no
+  delete); integrity → rebuild with a brand-new identity seed and re-upload once (same
+  bytes can never fix it), persisting the new seed/names/rows to the profile; true 1101 →
+  delete, confirm the delete landed (poll to 404, fixes the old 4s blind wait that could
+  resurrect the broken state), re-upload, re-enable + confirm subdomain, extended re-probe.
+  Propagation/patience and partial-route paths stop honestly with no delete.
+* New read-only `node wizard.mjs --doctor [worker-name]`: settings (date/flags vs required,
+  D1 binding vs profile), D1 lookup + census, deployed size/export/payload check, per-route
+  table + verdict + exactly one recommended command. Only GETs and read-only D1 SELECTs.
+* `tools/diagnose-1101.mjs` now flags outdated compat date, missing `nodejs_compat`, and the
+  binding/integrity body markers in its classification.
+
+### English-only wizard (owner request)
+Every Farsi/Persian string removed from `wizard/zeus-wizard.mjs` — banner, all ten install
+steps + six update steps, every prompt (defaults still shown in `[brackets]`), every ok/warn,
+every error (still ends with one `Next step:`), install/update summaries, custom-domain flow,
+`--prepare-only` / `--personalize` / `--token-link` / `--help` (new: documents `--doctor`).
+Verified by scan: zero `[\u0600-\u06FF]` characters in the file. `wizard/wizard.mjs`
+re-synced byte-identical (S8 guards the pair). install.sh/ps1 were already English-only.
+The PANEL product itself is intentionally untouched (its Farsi UI is the product).
+
+### Tests (all offline, zero Cloudflare calls)
+* `node tools/test-wizard-flows.mjs` → **166 PASS / 0 FAIL** (was 130): S1 now asserts
+  English-only output + D1 gate + settings confirmation + required date/flags in metadata;
+  S3 asserts the outdated-date upgrade + flags union; S12/S14/S15 updated to the English
+  lines; new S16 (binding 500 → re-pin, 2 PUTs, 0 DELETEs, healed), S17 (tripwire 503 →
+  rebuild with fresh seed, 2 PUTs of different bytes, 0 DELETEs, honest stop + profile
+  re-saved), S18 (empty D1 → gate creates base tables, CREATEs observed); S8 asserts the new
+  helpers/constants/doctor + still exactly one DELETE in the wizard. Mock upgraded: probe
+  answers all three routes per mode, settings reflect the last PUT's metadata, subdomain
+  handler moved out of the unreachable block, `emptyDb` mode added.
+* `test-personalize` 104/0, `test-ech-wizard` 41/0, `test-cfnew-wins` 21/0 — unchanged, still green.
+* `bench-decode`: cold ~7ms / cached ~77ns — no runtime change (all edits are deploy-time).
+* Live proof still owed: `node tools/live-update-check.mjs` + `--doctor` against a real
+  1101 panel need `ZEUS_CF_TOKEN`, absent in this session. Owner: run
+  `node wizard/zeus-wizard.mjs --doctor <worker>` and paste the output.
+
+Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
+`tools/test-wizard-flows.mjs`, `tools/diagnose-1101.mjs`.

@@ -28,6 +28,9 @@ console.log('\ndiagnosing:', name, '| created', w.created_on, '| modified', w.mo
 const st = await j(`/accounts/${A}/workers/scripts/${name}/settings`);
 const res = st.d.result || {};
 console.log('compatibility_date:', res.compatibility_date, '| flags:', JSON.stringify(res.compatibility_flags || []));
+const REQUIRED_DATE = '2026-07-10';
+if ((res.compatibility_date || '') < REQUIRED_DATE) console.log('  !! compat date is older than what the panel ships with (' + REQUIRED_DATE + ') — upgrade it: the runtime can throw at module load, which Cloudflare reports as 1101 on every route');
+if (!(res.compatibility_flags || []).includes('nodejs_compat')) console.log('  !! compatibility_flags lacks nodejs_compat, which the panel OTA updater always sets — a dropped flag can turn a healthy panel into 1101');
 console.log('bindings          :', JSON.stringify((res.bindings || []).map((b) => b.type + ':' + b.name + (b.id ? '(' + String(b.id).slice(0, 8) + '…)' : ''))));
 console.log('usage_model       :', res.usage_model, '| tail_consumers:', (res.tail_consumers || []).length);
 
@@ -78,11 +81,14 @@ try {
 
 console.log('\nroutes:');
 const bad = [];
+let sawBindingText = false, sawTripText = false;
 for (const path of ['/', '/panel', '/sw.js', '/manifest.json', '/icon.svg', '/api/does-not-exist']) {
   try {
     const r = await fetch(`https://${name}.${SUB}.workers.dev${path}`, { signal: AbortSignal.timeout(20000) });
     const t = await r.text();
     const code = (t.match(/error code: (\d+)/) || [])[1];
+    if (/Database binding 'DB' is missing/.test(t)) sawBindingText = true;
+    if (/Cloudflare D1 Quota Exceeded/.test(t) && r.status === 503) sawTripText = true;
     console.log('  ', path.padEnd(20), r.status, code ? 'error code ' + code : '(' + t.length + 'B html/body)');
     if (r.status >= 500) bad.push(path + '=' + r.status + (code ? '/' + code : ''));
   } catch (e) { console.log('  ', path.padEnd(20), 'fetch failed:', e.message); bad.push(path + '=ERR'); }
@@ -90,6 +96,8 @@ for (const path of ['/', '/panel', '/sw.js', '/manifest.json', '/icon.svg', '/ap
 
 const complete = bytes.length > 800000 && /export\s+default/.test(txt);
 console.log('\nclassification:');
-if (bad.length === 6) console.log(complete ? '  All routes fail 1101 while the deployed script is a COMPLETE, valid module with a working D1 binding -> the one-off poisoned deploy state on Cloudflare side; delete the worker and deploy the same bytes again.' : '  All routes fail 1101 and the script looks incomplete -> the uploaded bytes are damaged; re-run the installer.');
+if (sawBindingText) console.log('  The panel answers but reports its D1 binding is missing -> the edge has not picked up the attachment (or it was dropped). Re-run the wizard --update: it re-pins the binding without deleting anything.');
+else if (sawTripText) console.log('  The panel answers 503 on the integrity check -> the build tripped the panel integrity markers. Re-run the wizard --update --rotate for a fresh identity; same bytes can never fix this.');
+else if (bad.length === 6) console.log(complete ? '  All routes fail 1101 while the deployed script is a COMPLETE, valid module with a working D1 binding -> the one-off poisoned deploy state on Cloudflare side; delete the worker and deploy the same bytes again.' : '  All routes fail 1101 and the script looks incomplete -> the uploaded bytes are damaged; re-run the installer.');
 else if (!bad.length) console.log('  No 5xx right now — the panel answers every route.');
 else console.log('  Only some routes fail -> a runtime error inside those handlers, not the whole script; needs the stack (probe worker).');

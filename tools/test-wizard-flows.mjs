@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
-import { detectPrelude, xorDecode, KW_RE, FORK_SOURCES, PERM_GROUPS } from '../wizard/zeus-wizard.mjs';
+import { detectPrelude, xorDecode, KW_RE, FORK_SOURCES, PERM_GROUPS, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS, classifyDeployment } from '../wizard/zeus-wizard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT = resolve(__dirname, '..');
@@ -57,6 +57,7 @@ function startMock(opt = {}) {
     dbs: opt.dbs || [],    // [{name, uuid}]
     settings: opt.settings || null,
     censusFails: !!opt.censusFails,
+    emptyDb: !!opt.emptyDb, // D1 answers "no tables yet" so the readiness gate must create them
     probeMode: opt.probeMode || 'ok',   // ok | propagate | stuck | stuck-heals
     probeHits: 0,
   };
@@ -72,10 +73,13 @@ function startMock(opt = {}) {
       state.requests.push({ method, path: p + (url.search || '') });
       if (method === 'DELETE') state.deletes.push(p);
       const json = (status, obj) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
-      // the panel-address health probe the wizard polls (ZEUS_PROBE_URL points here)
-      if (url.pathname === '/probe/') {
+      // the panel-address health probe the wizard polls (ZEUS_PROBE_URL points here).
+      // The wizard probes three routes now ('/', '/panel', '/api/does-not-exist') so one
+      // fast poll cannot confuse a panel-side 500 with a Cloudflare 1101 page.
+      if (url.pathname === '/probe/' || url.pathname.startsWith('/probe/')) {
         state.probeHits++;
         const healed = state.deletes.length > 0;
+        const fixed = state.puts.length >= 2; // a corrective re-PUT landed
         if (state.probeMode === 'propagate') {
           if (state.probeHits < 3) return json(404, errEnv(10007, 'not yet'));
           return json(200, okEnv('up'));
@@ -83,6 +87,19 @@ function startMock(opt = {}) {
         if (state.probeMode === 'dead') {
           // a filtered / not-yet-propagated address: never answers, never 1101
           return json(404, errEnv(10007, 'not found'));
+        }
+        if (state.probeMode === 'binding-missing') {
+          // the panel's own 500: its D1 binding has not landed yet. The second PUT
+          // (the wizard's binding re-pin) fixes it — no delete involved.
+          if (fixed) return json(200, okEnv('up'));
+          res.writeHead(500, { 'content-type': 'text/plain' });
+          return res.end("Database binding 'DB' is missing in Cloudflare Workers settings.");
+        }
+        if (state.probeMode === 'tripwire') {
+          // the panel's own 503: its integrity check trips. Same bytes can never fix
+          // this — only a rebuilt identity can.
+          res.writeHead(503, { 'content-type': 'text/plain' });
+          return res.end('Cloudflare D1 Quota Exceeded');
         }
         if (state.probeMode === 'stuck') {
           res.writeHead(500, { 'content-type': 'text/plain' });
@@ -122,7 +139,7 @@ function startMock(opt = {}) {
           const sql = (JSON.parse(text).sql || '');
           let results;
           if (sql.includes('sqlite_master') && sql.includes('COUNT')) return json(200, okEnv({ results: [] }));
-          if (sql.includes('sqlite_master')) results = [{ name: 'users' }, { name: 'settings' }];
+          if (sql.includes('sqlite_master')) results = state.emptyDb ? [] : [{ name: 'users' }, { name: 'settings' }];
           else if (sql.includes('FROM "users"')) results = [{ n: 5 }];
           else if (sql.includes('FROM "settings"')) results = [{ n: 12 }];
           else results = [{ n: 0 }];
@@ -135,6 +152,10 @@ function startMock(opt = {}) {
           const name = decodeURIComponent(m[1]);
           if (method === 'GET' && m[2] === '/settings') {
             if (!state.scripts[name]) return json(404, errEnv(10007, 'script_not_found'));
+            // Like the real API, report the metadata of the last PUT when there is one —
+            // the wizard polls this to confirm the D1 binding, date and flags landed.
+            const md = state.scripts[name].metadata;
+            if (md) return json(200, okEnv({ bindings: md.bindings || [], compatibility_date: md.compatibility_date || '2024-09-23', compatibility_flags: md.compatibility_flags || [] }));
             return json(200, okEnv(state.settings || { bindings: [], compatibility_date: '2024-09-23' }));
           }
           if (method === 'GET' && url.searchParams.get('include_source') === 'true') {
@@ -170,8 +191,10 @@ function startMock(opt = {}) {
             state.scripts[name] = { bytes, metadata };
             return json(200, okEnv({ id: name }));
           }
-          if (method === 'POST' && p.endsWith('/subdomain')) return json(200, okEnv({ enabled: true }));
         }
+        // NOTE: this sits outside the script-match block on purpose — the subdomain path
+        // has an extra segment (/scripts/<name>/subdomain) that the script regex rejects.
+        if (method === 'POST' && /\/workers\/scripts\/[^/]+\/subdomain$/.test(p)) return json(200, okEnv({ enabled: true }));
         json(404, errEnv(9999, 'mock: unhandled ' + method + ' ' + p));
       } catch (e) {
         json(500, errEnv(500, 'mock error: ' + e.message));
@@ -234,6 +257,9 @@ try {
     check(r.out.includes('[1/10]  Validate your Cloudflare API token') && r.out.includes('[10/10]  Check the address'), 'S1 banner lists the ten steps the run really performs');
     check(r.out.includes('First thing to do: open the panel address above and set the admin password'), 'S1 tells the user to claim the panel before anything else');
     check(r.out.includes('the panel answers its own API without one'), 'S1 explains why the password has to come first');
+    check(!/[؀-ۿ]/.test(r.out), 'S1 the whole install output is English-only (no Persian/Arabic script)');
+    check(r.out.includes('Database is ready'), 'S1 the D1 readiness gate ran before the upload');
+    check(r.out.includes('Worker settings confirmed: D1 binding'), 'S1 the deployed settings were verified after the upload');
     const put = state.puts[0];
     check(!!put, 'S1 a worker script was uploaded');
     if (put) {
@@ -247,6 +273,8 @@ try {
       check(rows.join('\u0001') === CANON_ROWS.join('\u0001'), 'S1 every decoded row matches the original build');
       check(put.bytes.length !== Buffer.from(CANON).length || sha(put.bytes) !== sha(Buffer.from(CANON)), 'S1 uploaded build is not the shared repository build');
       check(!!put.metadata && put.metadata.main_module === 'worker.js', 'S1 upload metadata shape kept');
+      check(put.metadata.compatibility_date === REQUIRED_COMPAT_DATE, 'S1 fresh installs deploy with the panel-required compat date', put.metadata.compatibility_date);
+      check((put.metadata.compatibility_flags || []).includes('nodejs_compat'), 'S1 fresh installs deploy with the panel-required nodejs_compat flag', JSON.stringify(put.metadata.compatibility_flags));
       const bind = (put.metadata.bindings || [])[0];
       check(!!bind && bind.type === 'd1' && bind.name === 'DB' && bind.id === DB_UUID, 'S1 D1 binding attached', JSON.stringify(bind));
     }
@@ -309,7 +337,11 @@ try {
       check(Array.isArray(b) && b.some((x) => x.type === 'kv' && x.name === 'EXTRA'), 'S3 preserved the existing KV binding');
       check(Array.isArray(b) && b.some((x) => x.type === 'plain_text' && x.name === 'KEEP_ME'), 'S3 preserved an existing plain_text variable');
       check(Array.isArray(b) && b.filter((x) => x.type === 'd1').length === 1 && b.find((x) => x.type === 'd1').id === DB_UUID, 'S3 re-attached exactly one D1 binding', JSON.stringify(b));
-      check(put.metadata.compatibility_date === '2025-01-01', 'S3 kept the worker compatibility date', put.metadata.compatibility_date);
+      // The mock worker is pinned to an outdated 2025-01-01 date with no flags: the wizard
+      // must upgrade the date and add the required flags instead of preserving stale values.
+      check(put.metadata.compatibility_date === REQUIRED_COMPAT_DATE, 'S3 outdated compat date upgraded to the panel requirement', put.metadata.compatibility_date);
+      check(REQUIRED_COMPAT_FLAGS.every((f) => (put.metadata.compatibility_flags || []).includes(f)), 'S3 the required compat flags are present', JSON.stringify(put.metadata.compatibility_flags));
+      check(r.out.includes('compatibility date upgraded 2025-01-01'), 'S3 the upgrade is announced');
     }
     const prof = readProf();
     check(!!prof && prof.seed === prof0.seed, 'S3 identity seed unchanged');
@@ -441,9 +473,9 @@ try {
     check(!r.fatal && r.code === 0, 'S12 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
     check(r.out.includes('Cloudflare itself answered "error code: 1101"'), 'S12 names the real cause');
     check(r.out.includes('deletes the worker and uploads it once again'), 'S12 announces the self-heal before doing it');
-    // the 1101 explanation must be one clear bilingual line (phase 2 requirement)
-    check(r.out.includes('💬 EN: Cloudflare answered 1101 on a fresh deploy') && r.out.includes('the worker script is recreated once from the same verified bytes'), 'S12 explains the remedy in one English line');
-    check(r.out.includes('اسکریپت ورکر یک‌بار دیگر با همان بایت‌های تأییدشده ساخته می‌شود') && r.out.includes('دیتابیس، ردیف‌ها، آدرس و دامنه‌های شما هرگز تغییر نمی‌کنند'), 'S12 says in Farsi that the data is never touched');
+    // the remedy is one clear English line, and the data promise holds
+    check(r.out.includes('💬 Cloudflare answered 1101 on a fresh deploy') && r.out.includes('the worker script is recreated once from the same verified bytes'), 'S12 explains the remedy in one English line');
+    check(!/[؀-ۿ]/.test(r.out), 'S12 the whole self-heal output is English-only');
     check(state.deletes.length === 1 && /\/workers\/scripts\//.test(state.deletes[0]), 'S12 issued exactly one DELETE, on the worker script', JSON.stringify(state.deletes));
     check(!state.deletes.some((d) => /d1\/database/.test(d)), 'S12 never deletes a database', JSON.stringify(state.deletes));
     check(state.puts.length === 2, 'S12 redeployed the script once', 'PUTs=' + state.puts.length);
@@ -479,7 +511,8 @@ try {
     check(!r.fatal && r.code === 0, 'S14 exit code 0 (the deploy itself succeeded)', r.out && r.out.slice(-2000));
     check(r.out.includes('The address did not answer within'), 'S14 names the wait instead of a false failure');
     check(r.out.includes('the uploaded bytes were verified against the'), 'S14 keeps the upload verification as the truth');
-    check(r.out.includes('💬 EN: a brand-new address can take a minute or two to spread') && r.out.includes('FA: آدرس تازه ممکن است یک تا دو دقیقه طول بکشد'), 'S14 explains the wait in one bilingual line');
+    check(r.out.includes('💬 A brand-new address can take a minute or two to spread'), 'S14 explains the wait in one clear line');
+    check(!/[؀-ۿ]/.test(r.out), 'S14 the whole patience output is English-only');
     check(state.deletes.length === 0, 'S14 an unreachable address is never mistaken for a 1101 — nothing was deleted', JSON.stringify(state.deletes));
     check(state.puts.length === 1, 'S14 uploaded exactly once (no pointless redeploy)');
     check(r.out.includes('Read-back matches'), 'S14 the deployment was still verified byte for byte');
@@ -495,7 +528,7 @@ try {
     check(r.out.includes('••••••••') && r.out.includes('(received, ' + TOKEN.length + ' chars)'), 'S15 shows only the fixed mask with the token length');
     const leakLines = r.out.split('\n').filter((l) => l.includes(TOKEN));
     check(leakLines.length === 0, 'S15 the typed token never appears in any output line', JSON.stringify(leakLines.slice(0, 3)));
-    check(r.out.includes('توکن شما') && r.out.includes('در لاگ'), 'S15 tells the user in Farsi that the token is never stored');
+    check(r.out.includes('never stored anywhere'), 'S15 tells the user in plain English that the token is never stored');
     // The reader must switch the console into raw mode: on Windows that is the only way to
     // stop conhost/PowerShell from echoing the keys itself (muting readline's output is not).
     const wizTxt = readFileSync(WIZARD_SRC, 'utf8');
@@ -514,6 +547,59 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S16 binding fix
+  console.log('• S16 a missing D1 binding is re-pinned without deleting anything');
+  {
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({ probeMode: 'binding-missing' });
+    const r = await run(root, port, [], [TOKEN, '', 'n']);
+    check(!r.fatal && r.code === 0, 'S16 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
+    check(r.out.includes('reports its database binding is missing'), 'S16 names the binding problem, not a stuck deploy');
+    check(r.out.includes('re-attaching the same D1 database now (nothing is deleted)'), 'S16 announces the fix before doing it');
+    check(state.deletes.length === 0, 'S16 a binding problem is never answered with a DELETE', JSON.stringify(state.deletes));
+    check(state.puts.length === 2, 'S16 re-uploaded once with the binding pinned', 'PUTs=' + state.puts.length);
+    check(r.out.includes('Binding fix worked'), 'S16 reports the healed address as working', r.out.slice(-1500));
+    check(r.out.includes('Install complete'), 'S16 still completes the install');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S17 integrity rebuild
+  console.log('• S17 a tripped integrity check rebuilds the identity instead of re-uploading');
+  {
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({ probeMode: 'tripwire' });
+    const r = await run(root, port, [], [TOKEN, '', 'n']);
+    check(!r.fatal && r.code === 0, 'S17 exit code 0 (the deploy itself is verified)', r.out && r.out.slice(-3000));
+    check(r.out.includes('integrity check trips on every route'), 'S17 names the integrity problem');
+    check(r.out.includes('rebuilding this install with a fresh identity'), 'S17 announces the rebuild before doing it');
+    check(state.deletes.length === 0, 'S17 a tripped check is never answered with a DELETE', JSON.stringify(state.deletes));
+    check(state.puts.length === 2, 'S17 uploaded the original build once, then the rebuilt one', 'PUTs=' + state.puts.length);
+    check(state.puts.length === 2 && sha(state.puts[0].bytes) !== sha(state.puts[1].bytes), 'S17 the second upload really is a different identity');
+    check(r.out.includes('Still not answering after one rebuild'), 'S17 tells the truth when the rebuild does not help either');
+    const prof = readProf();
+    check(!!prof && /^[0-9a-f]{32}$/.test(prof.seed || ''), 'S17 the profile records the rebuilt identity seed');
+    check(r.out.includes('Install complete'), 'S17 still completes the install (the deploy itself is verified)');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S18 empty database
+  console.log('• S18 a fresh empty database gets its base tables before the upload');
+  {
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({ emptyDb: true });
+    const r = await run(root, port, [], [TOKEN, '', 'n']);
+    check(!r.fatal && r.code === 0, 'S18 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Database is ready: base tables created'), 'S18 the readiness gate created the base tables');
+    check(r.out.includes('Read-back matches') && r.out.includes('Install complete'), 'S18 the install still completed');
+    const creates = state.requests.filter((q) => q.method === 'POST' && q.path.includes('/query'));
+    check(creates.length >= 2, 'S18 the gate issued the CREATE TABLE statements', JSON.stringify(state.requests.filter((q) => q.method !== 'GET').map((q) => q.method + ' ' + q.path)));
+    check(state.requests.every((q) => q.method !== 'DELETE'), 'S18 no DELETE request issued');
+    server.close();
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');
@@ -525,6 +611,13 @@ try {
     check(PERM_GROUPS.length === 6 && !PERM_GROUPS.some((g) => /zone/.test(g.key)), 'S8 token scope unchanged (no Zone:Read)');
     const wizTxt = readFileSync(WIZARD_SRC, 'utf8');
     check(wizTxt.includes('ZEUS_PROBE_URL') && wizTxt.includes('function classifyProbe('), 'S8 health probe distinguishes propagation from a stuck deploy');
+    check(wizTxt.includes('function classifyDeployment(') && wizTxt.includes('function probeAll(') && wizTxt.includes('function waitForVerdict('), 'S8 multi-route diagnosis exists (binding vs integrity vs 1101 vs propagation)');
+    check(wizTxt.includes('function ensureD1Ready('), 'S8 the D1 readiness gate exists');
+    check(wizTxt.includes('REQUIRED_COMPAT_DATE') && wizTxt.includes("REQUIRED_COMPAT_DATE = '2026-07-10'"), 'S8 the panel-required compat date is pinned in the wizard');
+    check(wizTxt.includes('nodejs_compat') && wizTxt.includes('compatibility_flags'), 'S8 the wizard sends and verifies compatibility flags (never silently drops them)');
+    check(REQUIRED_COMPAT_DATE === '2026-07-10' && REQUIRED_COMPAT_FLAGS.join(',') === 'nodejs_compat', 'S8 the required runtime values match the panel OTA updater', REQUIRED_COMPAT_DATE + ' ' + REQUIRED_COMPAT_FLAGS.join(','));
+    check(typeof classifyDeployment === 'function', 'S8 classifyDeployment is exported and testable');
+    check(wizTxt.includes('--doctor') && wizTxt.includes('function doctorMain('), 'S8 the read-only doctor mode exists');
     check(wizTxt.includes('canHeal: false') && (wizTxt.match(/canHeal/g) || []).length >= 3, 'S8 the self-heal is capped at one attempt (no recursion)');
     check((wizTxt.match(/method: 'DELETE'/g) || []).length === 1, 'S8 exactly one DELETE exists in the wizard (the worker-script self-heal)', String((wizTxt.match(/method: 'DELETE'/g) || []).length));
     check(!/d1\/database\/[^`'"]*\\?`[^`]*method:\s*'DELETE'/.test(wizTxt) && !/d1\/database\/\$\{dbId\}`,\s*\{\s*method:\s*'DELETE'/.test(wizTxt), 'S8 no DELETE is ever issued against a database');

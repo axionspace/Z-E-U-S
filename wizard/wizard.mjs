@@ -54,6 +54,14 @@ const PERM_GROUPS = [
   { key: 'account_analytics', type: 'read' },
 ];
 const COMPAT_DATE = '2024-09-23';
+// The panel's own over-the-air updater deploys with compatibility_date "2026-07-10" and
+// compatibility_flags ["nodejs_compat"] (see analysis/Source.js, the OTA metadata block).
+// That is the runtime the panel author ships and tests against, so the wizard deploys
+// fresh installs with exactly the same values: an older date or dropped flags risks the
+// worker throwing during module evaluation, which Cloudflare reports as error 1101 on
+// every route — while the uploaded bytes are perfectly fine.
+const REQUIRED_COMPAT_DATE = '2026-07-10';
+const REQUIRED_COMPAT_FLAGS = ['nodejs_compat'];
 
 // Small random lowercase name — used for the token name and the worker-name suggestion
 function randName(n) {
@@ -79,47 +87,42 @@ let step = 0;
 let totalSteps = 10;
 
 // ---------------------------------------------------------------- UI helpers
-// Farsi first, English second. The big line is plain Farsi so a non-expert can finish the
-// whole wizard half-asleep; the indented line is the short English equivalent. Every
-// question shows its default, every step prints what it does and why, and every error ends
-// with ONE concrete next action.
+// Plain English throughout: one question per screen, sensible defaults shown,
+// every step prints what it does and why, and every error ends with ONE concrete
+// next action.
 const line = '─'.repeat(58);
 function banner() {
   console.log(`
 ${line}
-    ⚡ ویزارد نصب زئوس  —  Zeus Install Wizard
+    ⚡ Zeus Install Wizard — automated installer for the hardened panel
 ${line}
-    این ویزارد چه کاری می‌کند؟  —  This wizard will:
-       [1/10]  Validate your Cloudflare API token  ·  بررسی توکن
-       [2/10]  Pick the account to install into  ·  انتخاب اکانت
-       [3/10]  Choose the worker name  ·  انتخاب اسم ورکر
-       [4/10]  Read your workers.dev subdomain  ·  خواندن آدرس workers.dev
-       [5/10]  Create the D1 database, or reuse an existing one  ·  ساخت یا استفاده از دیتابیس
-       [6/10]  Fetch the hardened source from this repository  ·  آوردن سورس سخت‌شده
-       [7/10]  Give this install its own build fingerprint  ·  ساخت هویت اختصاصی این نصب
-       [8/10]  Upload the worker and verify the deployed bytes match  ·  آپلود و تطبیق بایت‌ها
-       [9/10]  Enable the public workers.dev address  ·  روشن کردن آدرس عمومی
-      [10/10]  Check the address, then (optionally) attach a custom domain  ·  چک آدرس و اتصال دامنه
-    بعداً برای آپدیت فقط این را اجرا کنید:  «node wizard.mjs --update»
+    This wizard will:
+       [1/10]  Validate your Cloudflare API token (a pre-filled creation link is printed)
+       [2/10]  Pick the account to install into
+       [3/10]  Choose the worker name (a neutral random one is suggested)
+       [4/10]  Read your workers.dev subdomain
+       [5/10]  Create the D1 database, or reuse an existing one
+       [6/10]  Fetch the hardened source from this repository
+       [7/10]  Give this install its own build fingerprint (new key, order and names)
+       [8/10]  Upload the worker and verify the deployed bytes match
+       [9/10]  Enable the public workers.dev address
+      [10/10]  Check the address, then (optionally) attach a custom domain
     Later on, "node wizard.mjs --update" re-deploys using the saved defaults.
 ${line}
-    🔒 نکتهٔ امنیتی / Safety: توکن شما هیچ‌جا ذخیره نمی‌شود — نه در فایل و نه در لاگ.
-    Your API token is never written anywhere: not to a file, not to a log.
+    🔒 Safety: your API token is never stored anywhere — not in a file, not in a log.
 ${line}`);
 }
 function bannerUpdate(profile) {
   console.log(`
 ${line}
-    ⚡ آپدیت پنل با تنظیمات ذخیره‌شده  —  Manual update (saved defaults)
+    ⚡ Zeus Install Wizard — manual update (saved defaults)
 ${line}
     manual update (saved defaults) — nothing is deleted, only the worker script is replaced
-      اکانت / account : ${profile.accountName || profile.accountId}
-      ورکر / worker   : ${profile.workerName}
-      دیتابیس / db    : ${profile.dbName || '(none)'}${profile.dbId ? ' (' + String(profile.dbId).slice(0, 8) + '…)' : ''}
-      آدرس / address  : ${profile.panelUrl || '(unknown)'}
-      هویت / identity : ${profile.names ? Object.values(profile.names).slice(0, 2).join(', ') + ' …' : 'shared repository build'}
-    هیچ داده‌ای حذف نمی‌شود: دیتابیس D1، ردیف‌های آن، آدرس workers.dev و هر دامنه‌ای که
-    وصل کرده‌اید دقیقاً مثل قبل می‌مانند.
+      account : ${profile.accountName || profile.accountId}
+      worker  : ${profile.workerName}
+      database: ${profile.dbName || '(none)'}${profile.dbId ? ' (' + String(profile.dbId).slice(0, 8) + '…)' : ''}
+      address : ${profile.panelUrl || '(unknown)'}
+      identity: ${profile.names ? Object.values(profile.names).slice(0, 2).join(', ') + ' …' : 'shared repository build'}
     Nothing in this run deletes your data: the D1 database, its rows, the workers.dev
     address and any attached domain are left exactly as they are. (If Cloudflare itself
     reports error 1101 on the address, the worker script may be recreated — never the
@@ -145,12 +148,10 @@ function nextPiped() {
   return pipedLines[pipedIdx++];
 }
 
-// One question per screen: a plain Farsi line, then the short English sub-label, then the
-// prompt with its default inside square brackets so it is always visible.
-async function ask(rl, q, def = '', fa = '') {
-  if (fa) console.log('  ❯ ' + fa);
-  console.log('    ' + q);
-  const prompt = def !== '' ? `  پاسخ / ${q} [${def}]: ` : `  پاسخ / ${q}: `;
+// One question per screen: the prompt shows the question with its default inside
+// square brackets so it is always visible.
+async function ask(rl, q, def = '') {
+  const prompt = `  ${q}${def ? ` [${def}]` : ''}: `;
   if (pipedLines) {
     const a = nextPiped();
     if (a === null) {
@@ -181,8 +182,8 @@ function restoreTty() {
   try { if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false); } catch {}
   try { process.stdin.pause(); } catch {}
 }
-async function askSecret(rl, q, fa = '') {
-  const label = fa || 'توکن API کلودفلر را اینجا بچسبانید و Enter بزنید';
+async function askSecret(rl, q) {
+  const label = 'Paste your Cloudflare API token here and press Enter';
   if (pipedLines) {
     let a = nextPiped();
     while (a === '') a = nextPiped(); // an empty token is meaningless; skip empty lines
@@ -215,7 +216,7 @@ async function askSecret(rl, q, fa = '') {
     const draw = () => {
       const dots = '•'.repeat(value.length ? 8 : 0);
       const txt = value.length ? dots + '   (received, ' + value.length + ' chars)'
-        : '(حروف تایپ‌شده نمایش داده نمی‌شوند — بچسبانید و Enter بزنید)';
+        : '(typing is hidden — paste the token and press Enter)';
       if (shown) process.stdout.write('\r' + ' '.repeat(shown) + '\r');
       shown = txt.length;
       process.stdout.write(txt);
@@ -248,32 +249,25 @@ async function askSecret(rl, q, fa = '') {
 
 function ok(msg) { console.log(`  ✅ ${msg}`); }
 function warn(msg) { console.log(`  ⚠️  ${msg}`); }
-// Farsi-first variants: the Persian line carries the message, the English one explains it.
-function okF(fa, en) { console.log(`  ✅ ${fa}`); if (en) console.log(`     ${en}`); }
-function warnF(fa, en) { console.log(`  ⚠️  ${fa}`); if (en) console.log(`     ${en}`); }
 function info(msg) { console.log(`     ${msg}`); }
-// "what it does / why", printed before every Cloudflare-touching step.
-function why(what, whyText) {
-  console.log(`     ▸ چه کاری می‌کند / what: ${what}`);
-  console.log(`     ▸ چرا / why: ${whyText}`);
+// Context line printed before every Cloudflare-touching step.
+function why(line) {
+  console.log('     ' + line);
 }
 let activeRl = null; // for a clean readline exit (avoids the Windows assert)
-// Every error ends with ONE concrete next action, in both languages.
+// Every error ends with ONE concrete next action.
 function fail(msg, hint) {
   console.error(`\n  ❌ ${msg}`);
-  if (hint) {
-    console.error(`     💡 ${hint}`);
-    if (!/[؀-ۿ]/.test(hint)) console.error(`     💡 کاری که باید بکنید / your next step: ${hint}`);
-  }
+  if (hint) console.error(`     💡 Next step: ${hint}`);
   process.exitCode = 1;
   restoreTty();
   try { process.stdin.pause(); } catch {}
   try { activeRl && activeRl.close(); } catch {}
   throw { __zeusExit: true };
 }
-function nextStep(title, fa = '') {
+function nextStep(title) {
   step++;
-  console.log(`\n${line}\n  [${step}/${totalSteps}]  ${title}${fa ? '\n             ' + fa : ''}\n${line}`);
+  console.log(`\n${line}\n  [${step}/${totalSteps}]  ${title}\n${line}`);
 }
 
 // ---------------------------------------------------------------- CF helpers
@@ -678,6 +672,43 @@ function sameCensus(a, b) {
   return ka.every((k) => a[k] === b[k]);
 }
 
+// Readiness gate for a database the wizard is about to use. A freshly created D1 is
+// empty: the panel creates its own tables on first request, but the very first requests
+// racing that migration used to fail until the schema existed. Creating the two base
+// tables here (exactly the panel's own CREATE TABLE IF NOT EXISTS statements — never
+// touching existing data) removes that race before a single byte is uploaded.
+async function ensureD1Ready(accountId, dbId, dbName) {
+  const q = async (sql) => {
+    const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql } });
+    if (!r.ok) return null;
+    const res = r.data && r.data.result;
+    if (Array.isArray(res)) {
+      const first = res[0] || {};
+      return first.results || first.rows || [];
+    }
+    return (res && (res.rows || res.results)) || [];
+  };
+  const ping = await q('SELECT 1 AS one');
+  if (!ping) {
+    warn('Could not query the database ' + (dbName || 'DB') + ' with this token — continuing; the panel creates its own tables on first request.');
+    return false;
+  }
+  const tables = await q("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+  const names = new Set((tables || []).map((t) => t && t.name));
+  let created = 0;
+  if (!names.has('users')) {
+    const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql: 'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, uuid TEXT, limit_gb REAL, expiry_days INTEGER, ips TEXT, connection_type TEXT, tls TEXT, port INTEGER, used_gb REAL DEFAULT 0, is_active INTEGER DEFAULT 1, last_active INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)' } });
+    if (r.ok) created++;
+  }
+  if (!names.has('settings')) {
+    const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql: "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)" } });
+    if (r.ok) created++;
+  }
+  if (created) ok('Database is ready: base tables created in ' + (dbName || 'DB') + ' (existing data untouched)');
+  else ok('Database is ready: ' + (dbName || 'DB') + ' answers queries');
+  return true;
+}
+
 // Occasionally a freshly created worker on an account starts answering error 1101 on
 // every route even though the very same bytes run fine under a different name — a
 // one-off deploy state on Cloudflare's side. Deleting the worker and deploying again
@@ -726,28 +757,74 @@ async function deployedBytes(accountId, name) {
 }
 
 // Upload while keeping whatever the worker already carries (extra bindings, variables);
-// only the panel's own D1 binding is pinned.
+// only the panel's own D1 binding is pinned. The runtime metadata always satisfies the
+// panel's own requirements (REQUIRED_COMPAT_DATE / REQUIRED_COMPAT_FLAGS): an existing
+// newer date is kept, an older one is upgraded, flags are unioned and never dropped —
+// silently downgrading either is a known way to turn a healthy panel into error 1101.
 async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   const bytes = readFileSync(scriptPath);
   let bindings = [{ type: 'd1', name: 'DB', id: dbId }];
-  let compat = COMPAT_DATE;
+  let compat = REQUIRED_COMPAT_DATE;
+  let flags = [...REQUIRED_COMPAT_FLAGS];
   const settings = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
   if (settings.ok && Array.isArray(settings.data.result.bindings)) {
     const keep = settings.data.result.bindings.filter((b) => b && !(b.type === 'd1' && b.name === 'DB'));
     bindings = keep.concat([{ type: 'd1', name: 'DB', id: dbId }]);
-    if (settings.data.result.compatibility_date) compat = settings.data.result.compatibility_date;
+    const prevDate = settings.data.result.compatibility_date;
+    if (prevDate && prevDate > compat) compat = prevDate;
+    else if (prevDate && prevDate < compat) console.log('     (compatibility date upgraded ' + prevDate + ' → ' + compat + ' to match what the panel ships with)');
+    const prevFlags = settings.data.result.compatibility_flags;
+    if (Array.isArray(prevFlags)) flags = [...new Set([...prevFlags, ...REQUIRED_COMPAT_FLAGS])];
     if (keep.length) ok('Preserving ' + keep.length + ' existing worker binding(s)');
   } else if (settings.status === 404) {
     console.log('     (no existing bindings to preserve)');
   } else {
     warn('Could not read current worker settings (' + settings.errors + ') — uploading with the standard D1 binding.');
   }
-  const form = new FormData();
-  form.append('metadata', new File([JSON.stringify({ main_module: 'worker.js', compatibility_date: compat, bindings })], 'metadata.json', { type: 'application/json' }));
-  form.append('worker.js', new File([bytes], 'worker.js', { type: 'application/javascript+module' }));
-  const up = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'PUT', body: form });
+  const metadata = { main_module: 'worker.js', compatibility_date: compat, compatibility_flags: flags, bindings };
+  const putOnce = async () => {
+    const form = new FormData();
+    form.append('metadata', new File([JSON.stringify(metadata)], 'metadata.json', { type: 'application/json' }));
+    form.append('worker.js', new File([bytes], 'worker.js', { type: 'application/javascript+module' }));
+    return cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'PUT', body: form });
+  };
+  let up = await putOnce();
   if (!up.ok) fail('Worker upload failed (' + up.errors + ')', up.status === 413 ? 'Script is too large — build a different source version.' : 'Check Workers Scripts/Edit access in the token.');
-  ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ')');
+  ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ' ' + flags.join('+') + ')');
+  // Settings are eventually consistent after a PUT: poll until the API reports back the
+  // bindings, date and flags that were just sent. Deploying blind here used to leave
+  // workers behind with a missing D1 binding — every route then failed until someone
+  // re-ran the wizard by hand.
+  let settled = null;
+  for (let t = 0; t < 8; t++) {
+    const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+    if (st.ok) {
+      const r = st.data.result || {};
+      const d1 = (r.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
+      const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (r.compatibility_flags || []).includes(f));
+      if (d1 && d1.id === dbId && (r.compatibility_date || '') >= REQUIRED_COMPAT_DATE && flagsOk) { settled = r; break; }
+    }
+    await new Promise((r) => setTimeout(r, 4000));
+  }
+  if (!settled) {
+    warn('Worker settings have not settled yet — re-applying the same metadata once to pin the D1 binding, date and flags.');
+    up = await putOnce();
+    if (!up.ok) fail('Worker upload failed (' + up.errors + ')', 'Check Workers Scripts/Edit access in the token.');
+    for (let t = 0; t < 8; t++) {
+      const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+      if (st.ok) {
+        const r = st.data.result || {};
+        const d1 = (r.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
+        const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (r.compatibility_flags || []).includes(f));
+        if (d1 && d1.id === dbId && (r.compatibility_date || '') >= REQUIRED_COMPAT_DATE && flagsOk) { settled = r; break; }
+      }
+      await new Promise((r) => setTimeout(r, 4000));
+    }
+    if (!settled) warn('Could not confirm the worker settings yet — continuing; the read-back check below still proves the bytes.');
+    else ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
+  } else {
+    ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
+  }
   let back = await deployedBytes(accountId, workerName);
   for (let t = 0; !back.ok && t < 3; t++) {
     await new Promise((r) => setTimeout(r, 4000));
@@ -777,13 +854,26 @@ function probeBase(workerName, subdomain) {
 }
 
 async function probeOnce(base) {
+  return probeRoute(base, '/');
+}
+
+// One route, with the body kept: the body is what separates a Cloudflare 1101 page
+// from the panel's own 500/503 answers, and those need different fixes.
+async function probeRoute(base, path) {
   try {
-    const res = await fetch(base + '/', { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(base + path, { signal: AbortSignal.timeout(15000) });
     const text = await res.text();
-    return { status: res.status, code: (text.match(/error code: (\d+)/) || [])[1] || null, net: null };
+    return { path, status: res.status, code: (text.match(/error code: (\d+)/) || [])[1] || null, text: text.slice(0, 400), net: null };
   } catch (e) {
-    return { status: 0, code: null, net: String((e.cause && e.cause.code) || e.code || e.message).slice(0, 40) };
+    return { path, status: 0, code: null, text: '', net: String((e.cause && e.cause.code) || e.code || e.message).slice(0, 40) };
   }
+}
+
+const PROBE_ROUTES = ['/', '/panel', '/api/does-not-exist'];
+async function probeAll(base) {
+  const out = [];
+  for (const p of PROBE_ROUTES) out.push(await probeRoute(base, p));
+  return out;
 }
 
 function classifyProbe(p) {
@@ -794,59 +884,148 @@ function classifyProbe(p) {
   return 'other';
 }
 
-// Returns { ok, state, healed }. Never deletes anything except the worker script it has
-// just deployed itself, and only after Cloudflare itself reported 1101 (proof the address
-// is reachable, so this can never fire for a simply-filtered workers.dev).
-async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true }) {
+// Panel-own markers (exact response bodies from analysis/Source.js, fetch handler):
+//   missing D1 binding -> 500 "Database binding 'DB' is missing ..."
+//   tripped integrity check -> 503 "Cloudflare D1 Quota Exceeded"
+const BINDING_MISSING_RE = /Database binding 'DB' is missing/;
+const INTEGRITY_TRIP_RE = /Cloudflare D1 Quota Exceeded/;
+
+// Full verdict across the three routes. A single fast poll cannot tell these apart,
+// and each one needs a different fix — that confusion is why 1101s used to survive.
+function classifyDeployment(probes) {
+  const texts = probes.map((p) => p.text || '').join('\n');
+  const codes = probes.map((p) => p.code);
+  const statuses = probes.map((p) => p.status);
+  if (probes.every((p) => p.status >= 200 && p.status < 400)) return 'ok';
+  if (BINDING_MISSING_RE.test(texts)) return 'binding';
+  if (INTEGRITY_TRIP_RE.test(texts) && statuses.some((s) => s === 503)) return 'integrity';
+  if (codes.includes('1101')) return 'stuck';
+  if (statuses.every((s) => s === 404 || s === 0)) return 'propagating';
+  if (statuses.some((s) => s >= 500)) return 'stuck';
+  if (statuses.some((s) => s >= 200 && s < 400)) return 'partial';
+  return 'other';
+}
+
+// Poll the full route set until it reads 'ok' or the budget runs out.
+async function waitForVerdict(base, waitMs, stepMs) {
+  const deadline = Date.now() + waitMs;
+  let probes = await probeAll(base);
+  let verdict = classifyDeployment(probes);
+  while (verdict !== 'ok' && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, stepMs));
+    probes = await probeAll(base);
+    verdict = classifyDeployment(probes);
+  }
+  return { verdict, probes };
+}
+
+// Returns { ok, state, healed, rebuilt }. `rebuilt` is non-null only when the integrity
+// path minted a fresh identity — callers must persist its seed/names/rows to the profile.
+// Never deletes anything except the worker script it has just deployed itself, and only
+// after Cloudflare itself reported 1101 (proof the address is reachable, so this can
+// never fire for a simply-filtered workers.dev).
+async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true, srcPath = null, seed = null }) {
   const base = probeBase(workerName, subdomain);
   const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 90000);
   const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 8000);
   const deadline = Date.now() + waitMs;
-  let last = null, sawStuck = false;
+  let last = null;
   for (;;) {
     last = await probeOnce(base);
     const state = classifyProbe(last);
     if (state === 'ok') {
       log.log('  ✅ Panel address answers ' + last.status + ' ✔');
-      return { ok: true, state: 'ok', healed: false };
+      return { ok: true, state: 'ok', healed: false, rebuilt: null };
     }
-    if (state === 'stuck') sawStuck = true;
+    // The panel's own answers are deterministic — no point waiting out the window.
+    if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
     if (Date.now() >= deadline) break;
     await new Promise((r) => setTimeout(r, stepMs));
   }
-  if (!sawStuck) {
-    warn('The address did not answer within ' + Math.round(waitMs / 1000) + 's (' + (last.net || ('HTTP ' + last.status)) + ').');
-    console.log('  This does not mean the install failed: the uploaded bytes were verified against the');
-    console.log('  build that was produced here. On a filtered network workers.dev is simply unreachable.');
-    console.log('  Open the address from another network, or attach a custom domain at the last step.');
-    // Bilingual one-liner: patience, not failure.
-    console.log('  💬 EN: a brand-new address can take a minute or two to spread — the deploy itself was verified byte for byte.');
-    console.log('     FA: آدرس تازه ممکن است یک تا دو دقیقه طول بکشد تا منتشر شود — خودِ نصب بایت‌به‌بایت تأیید شده است.');
-    return { ok: false, state: 'unreachable', healed: false };
+  // One slow, careful pass over every route before deciding anything.
+  const first = await probeAll(base);
+  let verdict = classifyDeployment(first);
+  if (verdict === 'ok') {
+    log.log('  ✅ Panel address answers ' + first[0].status + ' ✔');
+    return { ok: true, state: 'ok', healed: false, rebuilt: null };
   }
-  if (!canHeal) return { ok: false, state: 'stuck', healed: false };
+  if (verdict === 'propagating' || verdict === 'other' || verdict === 'partial') {
+    if (verdict === 'partial') warn('Only some routes answer — the deploy itself is fine, so this looks like a panel-side issue on specific routes, not a broken deploy.');
+    else {
+      warn('The address did not answer within ' + Math.round(waitMs / 1000) + 's (' + (last.net || ('HTTP ' + last.status)) + ').');
+      console.log('  This does not mean the install failed: the uploaded bytes were verified against the');
+      console.log('  build that was produced here. On a filtered network workers.dev is simply unreachable.');
+      console.log('  Open the address from another network, or attach a custom domain at the last step.');
+    }
+    console.log('  💬 A brand-new address can take a minute or two to spread — the deploy itself was verified byte for byte.');
+    return { ok: false, state: verdict === 'partial' ? 'partial' : 'unreachable', healed: false, rebuilt: null };
+  }
+  if (!canHeal) return { ok: false, state: verdict, healed: false, rebuilt: null };
+  // --- the panel says its D1 binding is missing: re-pin it, no delete needed.
+  if (verdict === 'binding') {
+    warn('The panel answers but reports its database binding is missing — the edge has not picked up the D1 attachment yet.');
+    console.log('  💬 The panel reports its database binding is missing — re-attaching the same D1 database now (nothing is deleted).');
+    await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
+    const w = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
+    if (w.verdict === 'ok') { ok('Binding fix worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
+    warn('Still not answering after re-attaching the database (' + w.verdict + '). The D1 database itself was never touched.');
+    stuckWorkerHint();
+    return { ok: false, state: w.verdict, healed: true, rebuilt: null };
+  }
+  // --- the panel's integrity check trips: same bytes can never fix it, rebuild identity.
+  if (verdict === 'integrity') {
+    warn('The panel answers but its integrity check trips on every route — re-uploading the same build cannot fix that.');
+    if (!srcPath || !seed) {
+      warn('No source available to rebuild from — stopping here without touching anything else.');
+      stuckWorkerHint();
+      return { ok: false, state: verdict, healed: false, rebuilt: null };
+    }
+    console.log('  💬 The panel answers but its integrity check trips — rebuilding this install with a fresh identity and re-uploading once.');
+    const freshSeed = newSeed();
+    const r = personalize(readFileSync(srcPath, 'utf8'), freshSeed);
+    if (!r.ok) fail('The rebuilt copy did not match the original row-for-row: ' + r.problems.join(' / '),
+      'Nothing was uploaded. Run again with --no-fingerprint to use the shared repository build.');
+    const out = join(tmpdir(), 'zeus-build-' + randName(8) + '.mjs');
+    writeFileSync(out, r.out);
+    const chk = spawnSync(process.execPath, ['--check', out], { encoding: 'utf8' });
+    if (chk.status !== 0) fail('The rebuilt copy failed a syntax check.', (chk.stderr || '').split('\n').slice(0, 3).join(' '));
+    await uploadWorker(accountId, workerName, out, dbId, dbName);
+    const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
+    if (!en.ok) warn('Subdomain re-enable reported (' + en.errors + ') — enable it from the dashboard if needed.');
+    const w = await waitForVerdict(base, waitMs, stepMs);
+    const rebuilt = { seed: freshSeed, names: r.names, rows: r.entries };
+    if (w.verdict === 'ok') { ok('Rebuild worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt }; }
+    warn('Still not answering after one rebuild (' + w.verdict + '). The database was never touched.');
+    stuckWorkerHint();
+    return { ok: false, state: w.verdict, healed: true, rebuilt };
+  }
+  // --- true 1101: Cloudflare's page, verified bytes. Delete the script once and redeploy.
   warn('Cloudflare itself answered "error code: 1101" on this address although the deployed bytes match the verified build.');
   console.log('  That is the one-off deploy state on Cloudflare side. Redeploying the same file to the same');
   console.log('  name does not clear it, so the wizard deletes the worker and uploads it once again.');
-  // One clear bilingual line, so the owner understands exactly what happened and why:
-  //   EN: Cloudflare hiccup on the fresh deploy (1101) → script recreated once, data untouched.
-  //   FA: بروز خطای ۱۱۰۱ از سوی کلودفلر → اسکریپت یک‌بار ساخته می‌شود، داده‌ها دست‌نخورده می‌مانند.
-  console.log('  💬 EN: Cloudflare answered 1101 on a fresh deploy — the worker script is recreated once from the same verified bytes; your database, rows, address and domains are never touched.');
-  console.log('     FA: کلودفلر روی نصب تازه خطای ۱۱۰۱ داد — اسکریپت ورکر یک‌بار دیگر با همان بایت‌های تأییدشده ساخته می‌شود؛ دیتابیس، ردیف‌ها، آدرس و دامنه‌های شما هرگز تغییر نمی‌کنند.');
+  // One clear line, so the owner understands exactly what happened and why:
+  // Cloudflare hiccup on the fresh deploy (1101) → script recreated once, data untouched.
+  console.log('  💬 Cloudflare answered 1101 on a fresh deploy — the worker script is recreated once from the same verified bytes; your database, rows, address and domains are never touched.');
   const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
-  if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false }; }
+  if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false, rebuilt: null }; }
   ok('Worker script removed; the database ' + (dbName || 'DB') + ' was not touched');
-  await new Promise((r) => setTimeout(r, 4000));
+  // Confirm the delete landed before re-uploading — racing the edge here used to
+  // resurrect the same broken state the delete was meant to clear.
+  for (let t = 0; t < 8; t++) {
+    const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+    if (!st.ok && st.status === 404) break;
+    await new Promise((r) => setTimeout(r, 4000));
+  }
   await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
   const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
   if (!en.ok) warn('Subdomain re-enable reported (' + en.errors + ') — enable it from the dashboard if needed.');
   const again = await verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log: { log: () => {} }, canHeal: false });
-  if (again.ok) { ok('Self-heal worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true }; }
+  if (again.ok) { ok('Self-heal worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
   warn('Still not answering after one self-heal (' + again.state + '). The panel code is not the problem — the deployed bytes were verified.');
   stuckWorkerHint();
   console.log('     You can also prove it in 10 seconds: run the installer once with a different worker name');
   console.log('     (--no-fingerprint keeps the shared build) — the same bytes run fine on a clean script name.');
-  return { ok: false, state: again.state, healed: true };
+  return { ok: false, state: again.state, healed: true, rebuilt: null };
 }
 
 // ---------------------------------------------------------------- main
@@ -875,153 +1054,129 @@ async function main() {
   }
 
   // ---------- [1/10] token
-  nextStep('Validate API token', 'ساخت و بررسی توکن کلودفلر');
-  why(
-    'یک لینک آماده برای ساخت توکن چاپ می‌شود، بعد توکن شما گرفته و بررسی می‌شود.',
-    'It prints a pre-filled token-creation link, then takes your token and verifies it.'
-  );
+  nextStep('Validate API token');
+  why('It prints a pre-filled token-creation link, then takes your token and verifies it.');
   const tokenUrl = makeTokenUrl();
-  console.log('  این لینک را در مرورگر باز کنید — همه دسترسی‌های لازم از قبل تنظیم شده و اسم توکن تصادفی است:');
   console.log('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
   console.log(`     ${tokenUrl}`);
-  console.log('  مراحل: Continue to summary → Create Token → کپی توکن → بچسبانید اینجا.');
   console.log('  (Continue to summary → Create Token → copy the created token and paste it here)');
-  console.log('  🔒 هیچ حرفی که تایپ می‌کنید نمایش داده نمی‌شود؛ فقط •••••••• (تعداد کاراکتر) دیده می‌شود.');
   console.log('  🔒 Nothing you type is echoed; only a fixed mask with the character count is shown.');
   const envTok = tokenFromEnv();
   if (envTok) {
     TOKEN = envTok;
-    okF('توکن از متغیر محیطی ZEUS_CF_TOKEN خوانده شد (هیچ‌جا ذخیره نمی‌شود).', 'API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
+    ok('API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
   } else {
-    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token', 'توکن API کلودفلر را اینجا بچسبانید و Enter بزنید');
+    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
   }
   const verify = await cf('/user/tokens/verify');
-  if (!verify.ok) fail('توکن معتبر نیست (' + verify.errors + ') | Token is not valid (' + verify.errors + ')', 'دوباره از همان لینک بالا توکن بسازید و بچسبانید. / Create the token again with the listed permissions and paste it here.');
-  okF('توکن معتبر است ✅' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''), 'Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
+  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions and paste it here.');
+  ok('Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
 
   // ---------- [2/10] account
-  nextStep('Select account', 'انتخاب اکانت');
+  nextStep('Select account');
   let accounts = await cf('/accounts?per_page=50');
   let accountId, accountName;
   if (!accounts.ok || !accounts.data.result?.length) {
-    warnF('با این توکن لیست اکانت‌ها خوانده نشد (' + (accounts.errors || 'no access') + ')', 'Could not list accounts with this token.');
-    accountId = await ask(rl, 'Enter your Account ID manually (from the overview page of your domain/worker)', '', 'Account ID را دستی وارد کنید (۳۲ کاراکتر هگز، از صفحهٔ Overview داشبورد کلودفلر).');
-    if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('فرمت Account ID اشتباه است (باید ۳۲ کاراکتر هگز باشد). | Account ID format is invalid (32 hex characters).', 'از داشبورد کلودفلر → صفحهٔ اصلی دامنه یا ورکر، قسمت API روی sidebar کپی کنید. / Copy the Account ID from the Cloudflare dashboard sidebar.');
+    warn('Could not list accounts with this token.');
+    accountId = await ask(rl, 'Enter your Account ID manually (from the overview page of your domain/worker)', '');
+    if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('Account ID format is invalid (32 hex characters).', 'Copy the Account ID from the Cloudflare dashboard sidebar.');
     accountName = accountId;
   } else if (accounts.data.result.length === 1) {
     accountId = accounts.data.result[0].id;
     accountName = accounts.data.result[0].name;
-    okF('اکانت: ' + accountName, 'Account: ' + accountName);
+    ok('Account: ' + accountName);
   } else {
     accounts.data.result.forEach((a, i) => console.log(`     ${i + 1}) ${a.name}  (${a.id.slice(0, 8)}...)`));
-    const idx = parseInt(await ask(rl, 'Account number', '1', 'شمارهٔ اکانت را بزنید (Enter = شمارهٔ ۱).'), 10);
+    const idx = parseInt(await ask(rl, 'Account number', '1'), 10);
     const picked = accounts.data.result[idx - 1];
-    if (!picked) fail('انتخاب نامعتبر است. | Invalid selection.', 'یکی از شماره‌های لیست بالا را وارد کنید. / Type one of the numbers listed above.');
+    if (!picked) fail('Invalid selection.', 'Type one of the numbers listed above.');
     accountId = picked.id; accountName = picked.name;
-    okF('اکانت: ' + accountName, 'Account: ' + accountName);
+    ok('Account: ' + accountName);
   }
 
   // ---------- [3/10] worker name
-  nextStep('Worker name', 'اسم ورکر (کارگر)');
+  nextStep('Worker name');
   const suggestedName = profile.workerName || 'web-' + randName(5);
   if (profile.workerName) {
     console.log(`  An install profile exists in this folder — press Enter to reuse "${profile.workerName}", or type another name for a second panel.`);
-    console.log(`  یک پروفایل نصب در این پوشه هست — Enter بزنید تا «${profile.workerName}» استفاده شود، یا اسم دیگری برای پنل دوم بنویسید.`);
   } else {
     console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
-    console.log('  یک اسم خنثی و تصادفی پیشنهاد می‌شود — فقط Enter بزنید تا بپذیرید (برای اسکن‌های خودکار سخت‌تر است).');
   }
-  const workerName = (await ask(rl, 'Worker name', suggestedName, 'اسم ورکر را بزنید (Enter = پیشنهاد بالا).')).toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('اسم ورکر فقط می‌تواند حروف کوچک انگلیسی، عدد و خط تیره داشته باشد. | Worker name may only contain lowercase letters, digits and hyphens.', 'Enter بزنید تا اسم تصادفی پیشنهادی استفاده شود. / Press Enter to accept the suggested random name.');
+  const workerName = (await ask(rl, 'Worker name', suggestedName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the suggested random name.');
 
   // ---------- [4/10] subdomain
-  nextStep('workers.dev address', 'آدرس رایگان workers.dev');
-  why(
-    'ساب‌دامین workers.dev اکانت شما خوانده می‌شود تا آدرس نهایی پنل ساخته شود.',
-    'Your account workers.dev subdomain is read so the final panel address can be built.'
-  );
+  nextStep('workers.dev address');
+  why('Your account workers.dev subdomain is read so the final panel address can be built.');
   let subdomain = '';
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   if (sub.ok && sub.data.result?.subdomain) {
     subdomain = sub.data.result.subdomain;
-    okF('آدرس نهایی پنل: https://' + workerName + '.' + subdomain + '.workers.dev', 'Final address will be: https://' + workerName + '.' + subdomain + '.workers.dev');
+    ok('Final address will be: https://' + workerName + '.' + subdomain + '.workers.dev');
   } else {
-    warnF('ساب‌دامین خوانده نشد (' + (sub.errors || '') + ') — ادامه می‌دهیم.', 'Could not fetch the subdomain (' + (sub.errors || '') + ') — continuing anyway.');
+    warn('Could not fetch the subdomain (' + (sub.errors || '') + ') — continuing anyway.');
   }
-  warnF('توجه: workers.dev در ایران فیلتر است؛ برای استفاده داخل ایران حتماً در مرحلهٔ آخر دامنهٔ اختصاصی وصل کنید.', 'Note: workers.dev is blocked in Iran; attach a custom domain for use inside Iran (final step).');
+  warn('Note: workers.dev is blocked in Iran; attach a custom domain for use inside Iran (final step).');
 
   // ---------- [5/10] D1
-  nextStep('Create D1 database', 'ساخت یا استفاده از دیتابیس D1');
-  why(
-    'پنل همهٔ کاربران و تنظیمات را در یک دیتابیس D1 نگه می‌دارد؛ اگر از قبل باشد همان استفاده می‌شود و هیچ‌وقت جایگزین یا حذف نمی‌شود.',
-    'The panel keeps every user and setting in one D1 database; an existing one is reused, never replaced or deleted.'
-  );
+  nextStep('Create D1 database');
+  why('The panel keeps every user and setting in one D1 database; an existing one is reused, never replaced or deleted.');
   let dbName = workerName + '-db';
   let dbId = '';
   const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
   const existing = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
   if (existing) {
     dbId = existing.uuid;
-    okF('دیتابیس موجود استفاده می‌شود: ' + dbName + ' (' + dbId.slice(0, 8) + '...)', 'Using existing database: ' + dbName + ' (' + dbId.slice(0, 8) + '...)');
+    ok('Using existing database: ' + dbName + ' (' + dbId.slice(0, 8) + '...)');
   } else {
     const created = await cf(`/accounts/${accountId}/d1/database`, { method: 'POST', body: { name: dbName } });
     if (!created.ok) {
       // Accounts hit a hard cap on databases (CF error 7406) after repeated installs;
       // reusing an existing database is the way through that, never deleting anything.
       if (!/7406|limit/i.test(created.errors)) {
-        fail('ساخت دیتابیس D1 انجام نشد (' + created.errors + ') | D1 database creation failed (' + created.errors + ')', 'مطمئن شوید توکن دسترسی D1/Edit دارد و اکانتتان D1 دارد (پلن رایگان هم دارد). / Make sure the token has D1/Edit access and your account has D1.');
+        fail('D1 database creation failed (' + created.errors + ')', 'Make sure the token has D1/Edit access and your account has D1 (the free plan includes it).');
       }
-      warnF('اکانت به سقف مجاز دیتابیس‌های D1 رسیده (' + created.errors + ').', 'The account is at its D1 database limit (' + created.errors + ').');
+      warn('The account is at its D1 database limit (' + created.errors + ').');
       const all = await cf(`/accounts/${accountId}/d1/database?per_page=50`);
       const free = (all.ok && all.data.result) || [];
-      if (!free.length) fail('هیچ دیتابیسی برای استفادهٔ مجدد نیست. | There is no database available to reuse.', 'در داشبورد یک دیتابیس قدیمی/تست را حذف کنید و ویزارد را دوباره اجرا کنید. / Delete an old test database in the dashboard, then run this wizard again.');
-      console.log('  دیتابیس‌های موجود این اکانت (این ویزارد هیچ‌کدام را حذف نمی‌کند):');
+      if (!free.length) fail('There is no database available to reuse.', 'Delete an old test database in the dashboard, then run this wizard again.');
       console.log('  Existing databases in this account (nothing is deleted by this wizard):');
       free.forEach((d, i) => console.log(`     ${i + 1}) ${d.name}`));
-      const pick = await ask(rl, 'Reuse which database number? (press Enter to stop here)', '', 'شمارهٔ کدام دیتابیس استفاده شود؟ (Enter = توقف)');
+      const pick = await ask(rl, 'Reuse which database number? (press Enter to stop here)', '');
       const chosen = pick ? free[parseInt(pick, 10) - 1] : null;
-      if (!chosen) fail('دیتابیسی انتخاب نشد — نصب قبل از هر تغییری متوقف شد. | No database chosen — the install stopped before any change.', 'در داشبورد یک اسلات D1 آزاد کنید و ویزارد را دوباره اجرا کنید. / Free a D1 slot in the dashboard and run the wizard again.');
+      if (!chosen) fail('No database chosen — the install stopped before any change.', 'Free a D1 slot in the dashboard and run the wizard again.');
       dbId = chosen.uuid;
       dbName = chosen.name;
-      warnF('استفادهٔ مجدد از ' + dbName + ' (' + String(dbId).slice(0, 8) + '…) — هر چه داخلش هست دست‌نخورده می‌ماند.', 'Reusing ' + dbName + ' (' + String(dbId).slice(0, 8) + '…) — anything it already holds stays as it is.');
+      warn('Reusing ' + dbName + ' (' + String(dbId).slice(0, 8) + '…) — anything it already holds stays as it is.');
     } else {
       dbId = created.data.result.uuid;
-      okF('دیتابیس ساخته شد: ' + dbName, 'Database created: ' + dbName);
+      ok('Database created: ' + dbName);
     }
   }
+  await ensureD1Ready(accountId, dbId, dbName);
 
   // ---------- [6/10] source
-  nextStep('Prepare hardened source', 'آماده‌سازی سورس سخت‌شده');
-  why(
-    'فایل پنل از همین مخیشه (یا چند آینهٔ CDN) گرفته و اسکن می‌شود تا هیچ رشتهٔ حساس نماند.',
-    'The panel file is fetched from this repository (or a CDN mirror) and scanned so no identifying string survives.'
-  );
+  nextStep('Prepare hardened source');
+  why('The panel file is fetched from this repository (or a CDN mirror) and scanned so no identifying string survives.');
   const src = await prepareSource(rl);
   const scan = scanKeywords(src.path);
-  if (scan.hits > 0) fail(`سورس هنوز ${scan.hits} خط با کلیدواژهٔ حساس دارد! | Source still has ${scan.hits} lines with identifiable keywords!`, 'از آینهٔ دیگری بگیرید یا مشکل را گزارش کنید. / Re-fetch from another mirror, or report it.');
-  okF('سورس آماده است: ' + src.path, 'Source is ready: ' + src.path + ' (' + (scan.size / 1024).toFixed(0) + 'KB, zero identifiable keywords)');
-  info('حجم: ' + (scan.size / 1024).toFixed(0) + 'KB | کلیدواژهٔ حساس / keyword survivors: 0');
+  if (scan.hits > 0) fail(`Source still has ${scan.hits} lines with identifiable keywords!`, 'Re-fetch from another mirror, or report the problem.');
+  ok('Source is ready: ' + src.path + ' (' + (scan.size / 1024).toFixed(0) + 'KB, zero identifiable keywords)');
+  info('Size: ' + (scan.size / 1024).toFixed(0) + 'KB | keyword survivors: 0');
 
   // ---------- [7/10] fingerprint
-  nextStep('Personalise this build', 'ساخت نسخهٔ اختصاصی این نصب');
-  why(
-    'جدول رشته‌های پنل با یک کلید تازه بازچینی و با اسم‌های تازه ساخته می‌شود تا نصب شما با نصب کس دیگری یکسان نباشد.',
-    'The payload string table is re-keyed, re-ordered and renamed so your build is not byte-identical to anyone else\u2019s own build.'
-  );
+  nextStep('Personalise this build');
+  why('The payload string table is re-keyed, re-ordered and renamed so your build is not byte-identical to anyone else\u2019s own build.');
   const build = seed ? fingerprint(src.path, seed) : { path: src.path, names: null, rows: 0 };
-  if (!seed) warnF('ساخت هویت اختصاصی رد شد (--no-fingerprint) — نسخهٔ مشترک مخیشه مستقر می‌شود.', 'Fingerprint skipped (--no-fingerprint) — the shared repository build is deployed.');
+  if (!seed) warn('Fingerprint skipped (--no-fingerprint) — the shared repository build is deployed.');
 
   // ---------- [8/10] upload
-  nextStep('Upload worker', 'آپلود ورکر و تطبیق بایت‌ها');
-  why(
-    'فایل ساخته‌شده روی ورکر شما آپلود و بلافاصله دوباره خوانده می‌شود تا بایت‌ها مطمئناً یکسان باشند.',
-    'The built file is uploaded and immediately read back so the deployed bytes are proven identical.'
-  );
+  nextStep('Upload worker');
+  why('The built file is uploaded and immediately read back so the deployed bytes are proven identical.');
   const exists = await workerExists(accountId, workerName);
   if (exists.known) {
-    const overwrite = await ask(rl, `Worker "${workerName}" already exists; overwrite it? (y/n)`, 'y', `ورکر «${workerName}» از قبل هست؛ جایگزین شود؟ (y/n — Enter = بله)`);
-    if (overwrite.toLowerCase() !== 'y') fail('با دستور شما لغو شد. | Cancelled by user.', 'اگر نمی‌خواهید ورکر موجود تغییر کند، اسم دیگری در مرحلهٔ قبل بنویسید. / Pick a different worker name if you do not want to replace it.');
-    console.log('     (فقط اسکریپت جایگزین می‌شود — دادهٔ D1، آدرس workers.dev و هر دامنهٔ وصل‌شده حفظ می‌شود)');
+    const overwrite = await ask(rl, `Worker "${workerName}" already exists; overwrite it? (y/n)`, 'y');
+    if (overwrite.toLowerCase() !== 'y') fail('Cancelled by user.', 'Pick a different worker name if you do not want to replace it.');
     console.log('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
   }
   await uploadWorker(accountId, workerName, build.path, dbId, dbName);
@@ -1042,16 +1197,25 @@ async function main() {
   saveProfile(prof);
 
   // ---------- [9/10] enable workers.dev
-  nextStep('Enable public address', 'روشن کردن آدرس عمومی workers.dev');
+  nextStep('Enable public address');
   const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
     method: 'POST', body: { enabled: true, previews_enabled: false },
   });
-  if (!en.ok) warnF('روشن کردن ساب‌دامین انجام نشد (' + en.errors + ') — می‌توانید از داشبورد انجام دهید.', 'Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
-  else okF('فعال شد: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev', 'Enabled: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
+  if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
+  else ok('Enabled: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
 
   // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
-  nextStep('Final check & summary', 'چک نهایی آدرس و خلاصه');
-  const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain });
+  nextStep('Final check & summary');
+  const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain, srcPath: src.path, seed });
+  if (health.rebuilt) {
+    seed = health.rebuilt.seed;
+    prof.seed = seed;
+    prof.names = health.rebuilt.names;
+    prof.rows = health.rebuilt.rows;
+    saveProfile(prof, true);
+    console.log('\n  Note: the panel kept tripping its integrity check, so the wizard rebuilt this');
+    console.log('  install with a brand-new identity and re-uploaded once. The database was never touched.');
+  }
   if (health.healed) {
     prof.healedAt = new Date().toISOString();
     saveProfile(prof, true);
@@ -1061,39 +1225,30 @@ async function main() {
 
   console.log(`
 ${line}
-  🎉 نصب تمام شد!  —  Install complete!
+  🎉 Install complete!
 
-     📍 آدرس پنل (اولین کار: گذاشتن پسورد ادمین):
+     📍 Panel address (open it first and set the admin password):
         ${panelUrl}
-        Panel address (to set the admin password the first time)
 
-     🔗 الگوی اشتراک کاربران / User subscription pattern:
+     🔗 User subscription pattern:
         https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/sub/<username>
 
-  ⚠️  اولین کاری که باید بکنید: آدرس بالا را باز کنید و پسورد ادمین را بگذارید.
-      تا وقتی پسورد وجود نداشته باشد پنل به API خودش بدون پسورد جواب می‌دهد — این
-      طراحی اولیهٔ نویسندهٔ اصلی است، پس نصب تازه را بدون پسورد رها نکنید.
-     First thing to do: open the panel address above and set the admin password.
+  ⚠️  First thing to do: open the panel address above and set the admin password.
      Until a password exists the panel answers its own API without one — that is the
      author's first-run design, so do not leave a fresh install unclaimed.
 ${line}
-  ⚠️  چهار نکتهٔ مهم / Four important notes:
-      ۱. این نصب هویت اختصاصی خودش را دارد${build.names ? ' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)' : ''} — با نصب
-         هیچ‌کس دیگر بایت‌به‌بایت یکسان نیست.
-      This deployment has its own build identity — it is not byte-identical to
-      anybody else's install of the same panel.
-      ۲. اگر روزی دکمهٔ «آپدیت پنل» داخل پنل را زدید، build نویسنده جای این یکی را
-         می‌گیرد — برگرداندنش با: node wizard.mjs --update
-      If you ever use the in-panel update button, the author's own build replaces
-      this one — restore it with: node wizard.mjs --update
-      ۳. برای استفاده داخل ایران مرحلهٔ دامنهٔ اختصاصی را کامل کنید (می‌توانید همین حالا).
-      For use inside Iran, complete the custom-domain step (you can also do it right now).
-      ۴. توکن API خودتان را محرمانه نگه دارید؛ این ویزارد هرگز آن را ذخیره نمی‌کند.
-      Keep your API token private; this wizard never stores it.
+  ⚠️  Four important notes:
+      1. This deployment has its own build identity${build.names ? ' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)' : ''} — it is not
+         byte-identical to anybody else's install of the same panel.
+      2. If you ever use the "Update panel" button inside the panel, the author's own
+         build replaces this one — restore it with: node wizard.mjs --update
+      3. For use inside Iran, complete the custom-domain step (you can also do it
+         right now).
+      4. Keep your API token private; this wizard never stores it.
 ${line}`);
 
   // ---------- optional custom domain
-  const wantDomain = await ask(rl, 'Do you have a custom domain you want to attach? (y/n)', 'n', 'دامنهٔ اختصاصی برای وصل کردن دارید؟ (y/n — Enter = نه)');
+  const wantDomain = await ask(rl, 'Do you have a custom domain you want to attach? (y/n)', 'n');
   if (wantDomain.toLowerCase() === 'y') {
     // Listing zones needs a token with Zone:Read — the wizard-created token does not include it,
     // so fall back to the manual Zone ID route (attaching itself only needs Workers Scripts access).
@@ -1102,28 +1257,28 @@ ${line}`);
     let hostname = '';
     if (zones.ok && zones.data.result?.length) {
       zones.data.result.forEach((z, i) => console.log(`     ${i + 1}) ${z.name}`));
-      const zi = parseInt(await ask(rl, 'Domain number', '1', 'شمارهٔ دامنه را بزنید (Enter = ۱).'), 10);
+      const zi = parseInt(await ask(rl, 'Domain number', '1'), 10);
       const zone = zones.data.result[zi - 1];
       if (!zone) {
-        warnF('انتخاب نامعتبر؛ رد شد.', 'Invalid selection; skipped.');
+        warn('Invalid selection; skipped.');
       } else {
         zoneId = zone.id;
-        hostname = (await ask(rl, `Subdomain to use on ${zone.name} (e.g. panel)`, 'panel', 'چه ساب‌دامینی از ' + zone.name + ' استفاده شود؟ (مثل panel)')).trim().toLowerCase() + '.' + zone.name;
+        hostname = (await ask(rl, `Subdomain to use on ${zone.name} (e.g. panel)`, 'panel')).trim().toLowerCase() + '.' + zone.name;
       }
     } else {
-      warnF('لیست دامنه‌ها خوانده نشد (' + (zones.errors || 'Zone:Read access required') + ').', 'Could not list zones — Zone:Read access is required for the list only.');
-      console.log('  می‌توانید همین حالا دستی وصلش کنید: داشبورد کلودفلر → دامنه → کپی «Zone ID»');
-      console.log('  from the right sidebar of the Overview page.');
-      zoneId = (await ask(rl, 'Zone ID (press Enter to skip and do it later from the dashboard)', '', 'Zone ID را بچسبانید (Enter = رد کردن و انجام بعدی از داشبورد)')).trim();
+      warn('Could not list zones — Zone:Read access is required for the list only.');
+      console.log('  You can still attach it now: open the Cloudflare dashboard, open your domain,');
+      console.log('  and copy the "Zone ID" from the right sidebar of the Overview page.');
+      zoneId = (await ask(rl, 'Zone ID (press Enter to skip and do it later from the dashboard)', '')).trim();
       if (zoneId && !/^[a-f0-9]{32}$/i.test(zoneId)) {
-        warnF('فرمت Zone ID اشتباه است (۳۲ کاراکتر هگز); رد شد.', 'Zone ID format is invalid (32 hex characters); skipped.');
+        warn('Zone ID format is invalid (32 hex characters); skipped.');
         zoneId = '';
       }
-      if (zoneId) hostname = (await ask(rl, 'Full hostname for the panel (e.g. panel.mydomain.com)', '', 'آدرس کامل پنل را بچسبانید (مثل panel.mydomain.com)')).trim().toLowerCase();
+      if (zoneId) hostname = (await ask(rl, 'Full hostname for the panel (e.g. panel.mydomain.com)', '')).trim().toLowerCase();
     }
     if (zoneId && hostname) {
       if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(hostname)) {
-        warnF('فرمت هاست درست نیست؛ رد شد — می‌توانید بعداً از داشبورد وصلش کنید (Worker → Settings → Domains).', 'Hostname looks invalid; skipped — you can attach it later from the dashboard (Worker → Settings → Domains).');
+        warn('Hostname looks invalid; skipped — you can attach it later from the dashboard (Worker → Settings → Domains).');
       } else {
         const domBody = { environment: 'production', hostname, service: workerName, zone_id: zoneId };
         // API docs list PUT for attaching a domain; POST kept as a fallback for robustness.
@@ -1131,23 +1286,22 @@ ${line}`);
         if (!cd.ok && (cd.status === 404 || cd.status === 405)) {
           cd = await cf(`/accounts/${accountId}/workers/domains`, { method: 'POST', body: domBody });
         }
-        if (!cd.ok) warnF('اتصال دامنه انجام نشد (' + cd.errors + ') — از داشبورد: Worker → Settings → Domains', 'Domain attach failed (' + cd.errors + ') — from the dashboard: Worker → Settings → Domains');
+        if (!cd.ok) warn('Domain attach failed (' + cd.errors + ') — from the dashboard: Worker → Settings → Domains');
         else {
-          okF('دامنه وصل شد: https://' + hostname + '/panel', 'Domain attached: https://' + hostname + '/panel');
-          console.log('     (رکورد DNS و گواهی SSL خودکار ساخته می‌شوند؛ چند دقیقه صبر کنید)');
+          ok('Domain attached: https://' + hostname + '/panel');
           console.log('     (DNS record and certificate are created automatically; allow a few minutes)');
           prof.hostname = hostname;
           prof.panelUrl = `https://${hostname}/panel`;
           prof.updatedAt = new Date().toISOString();
           saveProfile(prof, true);
-          okF('پروفایل با آدرس دامنه به‌روز شد: ' + prof.panelUrl, 'Profile updated with the domain address: ' + prof.panelUrl);
+          ok('Profile updated with the domain address: ' + prof.panelUrl);
         }
       }
     }
   }
 
   cleanup();
-  console.log('\nتمام شد. موفق باشید! 🌐  |  Done. Good luck!');
+  console.log('\nDone. Good luck! 🌐');
 }
 
 // Source preparation without any token / Cloudflare network access (for testing)
@@ -1155,14 +1309,14 @@ async function prepareOnlyMain() {
   await loadPipedInput();
   const rl = pipedLines ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
   activeRl = rl;
-  console.log('حالت آماده‌سازی: فقط سورس، بدون هیچ تماس با کلودفلر  |  Prepare-only mode: source preparation only\n');
+  console.log('Prepare-only mode: source preparation only\n');
   const src = await prepareSource(rl);
   const scan = scanKeywords(src.path);
-  console.log('  فایل / file: ' + src.path);
-  console.log('  حجم: ' + (scan.size / 1024).toFixed(0) + 'KB | کلیدواژهٔ حساس / keyword survivors: ' + scan.hits);
+  console.log(`  File: ${src.path}`);
+  console.log(`  Size: ${(scan.size / 1024).toFixed(0)}KB | identifiable keywords: ${scan.hits}`);
   if (rl) rl.close();
   if (scan.hits > 0) { process.exitCode = 2; return; }
-  console.log('  ✅ آماده‌سازی موفق بود  |  Preparation successful');
+  console.log('  ✅ Preparation successful');
 }
 
 // ---------------------------------------------------------------- manual update
@@ -1186,125 +1340,118 @@ async function updateMain() {
   const rotate = process.argv.includes('--rotate');
 
   // ---------- [1/6] token
-  nextStep('Validate API token', 'بررسی توکن');
+  nextStep('Validate API token');
   const envTok = tokenFromEnv();
   if (envTok) {
     TOKEN = envTok;
-    okF('توکن از متغیر محیطی ZEUS_CF_TOKEN خوانده شد (هیچ‌جا ذخیره نمی‌شود).', 'API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
+    ok('API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
   } else {
-    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token', 'توکن API کلودفلر را اینجا بچسبانید و Enter بزنید');
+    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
   }
   const verify = await cf('/user/tokens/verify');
-  if (!verify.ok) fail('توکن معتبر نیست (' + verify.errors + ') | Token is not valid (' + verify.errors + ')', 'دوباره از لینک ساخت توکن، توکن جدید بسازید و بچسبانید. / Create the token again with the listed permissions.');
+  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions.');
   ok('Token is valid');
 
   // ---------- [2/6] target
-  nextStep('Confirm what to update', 'تأیید مقصد آپدیت');
-  why(
-    'مقادیر ذخیره‌شده در پروفایل (اکانت، ورکر، دیتابیس) نشان داده می‌شود و فقط Enter می‌زنید.',
-    'The values stored in the install profile are shown and used as the defaults — press Enter to accept each.'
-  );
-  const accountId = (await ask(rl, 'Account ID', profile.accountId, 'Account ID (Enter = همان قبلی)')).trim().toLowerCase();
-  if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('فرمت Account ID اشتباه است (باید ۳۲ کاراکتر هگز باشد). | Account ID format is invalid (32 hex characters).', 'Enter بزنید تا همان Account ID ذخیره‌شده استفاده شود. / Press Enter to accept the stored Account ID.');
+  nextStep('Confirm what to update');
+  why('The values stored in the install profile are shown and used as the defaults — press Enter to accept each.');
+  const accountId = (await ask(rl, 'Account ID', profile.accountId)).trim().toLowerCase();
+  if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('Account ID format is invalid (32 hex characters).', 'Press Enter to accept the stored Account ID.');
   const accounts = await cf('/accounts?per_page=50');
   if (accounts.ok && accounts.data.result && accounts.data.result.length && !accounts.data.result.some((a) => a.id === accountId)) {
-    warnF('این توکن آن Account ID را لیست نمی‌کند — ادامه می‌دهیم.', 'This token does not list that account id — continuing anyway.');
+    warn('This token does not list that account id — continuing anyway.');
   }
-  const workerName = (await ask(rl, 'Worker name', profile.workerName, 'اسم ورکر (Enter = همان قبلی)')).toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('اسم ورکر فقط می‌تواند حروف کوچک انگلیسی، عدد و خط تیره داشته باشد. | Worker name may only contain lowercase letters, digits and hyphens.', 'Enter بزنید تا همان نام قبلی استفاده شود. / Press Enter to accept the stored name.');
+  const workerName = (await ask(rl, 'Worker name', profile.workerName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the stored name.');
   const current = await workerExists(accountId, workerName);
-  if (!current.ok) warnF('لیست اسکریپت‌های اکانت خوانده نشد (' + current.errors + ') — ادامه می‌دهیم.', 'Could not read the account script list (' + current.errors + ') — continuing.');
+  if (!current.ok) warn('Could not read the account script list (' + current.errors + ') — continuing.');
   if (current.known) ok('Existing worker found: ' + workerName);
-  else warnF('ورکر «' + workerName + '» در این اکانت نیست — این آپدیت آن را می‌سازد.', 'Worker "' + workerName + '" is not in this account — this update will create it.');
+  else warn('Worker "' + workerName + '" is not in this account — this update will create it.');
 
   // ---------- [3/6] database
-  nextStep('Re-attach the existing database', 'اتصال دوبارهٔ دیتابیس موجود');
-  why(
-    'دقیقاً همان دیتابیس قبلی وصل می‌شود و تعداد ردیف‌ها قبل و بعد اندازه‌گیری می‌شود تا ثابت شود هیچ داده‌ای از دست نرفته.',
-    'The very same database is re-attached and its row census is compared before and after so nothing can be lost silently.'
-  );
-  const dbName = (await ask(rl, 'D1 database name', profile.dbName || workerName + '-db', 'نام دیتابیس D1 (Enter = همان قبلی)')).trim();
+  nextStep('Re-attach the existing database');
+  why('The very same database is re-attached and its row census is compared before and after so nothing can be lost silently.');
+  const dbName = (await ask(rl, 'D1 database name', profile.dbName || workerName + '-db')).trim();
   let dbId = '';
   const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
   const found = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
   if (found) dbId = found.uuid;
   else if (profile.dbId) {
     const direct = await cf(`/accounts/${accountId}/d1/database/${profile.dbId}`);
-    if (direct.ok) { dbId = profile.dbId; warnF('دیتابیسی با نام «' + dbName + '» نیست — از شناسهٔ ذخیره‌شده استفاده می‌شود.', 'No database named "' + dbName + '" — using the saved database id instead.'); }
+    if (direct.ok) { dbId = profile.dbId; warn('No database named "' + dbName + '" — using the saved database id instead.');}
   }
   if (!dbId) {
-    const make = await ask(rl, `Database "${dbName}" is missing; create it empty? (y/n)`, 'n', `دیتابیس «${dbName}» پیدا نشد؛ خالی ساخته شود؟ (y/n — Enter = نه)`);
-    if (make.toLowerCase() !== 'y') fail('آپدیت متوقف شد: پنل به دیتابیس نیاز دارد. نام دقیقش را بدهید یا نصب کامل را اجرا کنید. | Update stopped: the panel needs a database. Give its exact name, or run the full install.', 'نام دیتابیس را از داشبورد کلودفلر کپی کنید، یا نصب کامل را یک بار اجرا کنید. / Copy the exact database name from the Cloudflare dashboard, or run the full install once.');
+    const make = await ask(rl, `Database "${dbName}" is missing; create it empty? (y/n)`, 'n');
+    if (make.toLowerCase() !== 'y') fail('Update stopped: the panel needs a database. Give its exact name, or run the full install.', 'Copy the exact database name from the Cloudflare dashboard, or run the full install once.');
     const c = await cf(`/accounts/${accountId}/d1/database`, { method: 'POST', body: { name: dbName } });
-    if (!c.ok) fail('ساخت دیتابیس انجام نشد (' + c.errors + ') | Could not create the database (' + c.errors + ')');
+    if (!c.ok) fail('Could not create the database (' + c.errors + ')');
     dbId = c.data.result.uuid;
-    okF('دیتابیس خالی ساخته شد: ' + dbName, 'Created an empty database: ' + dbName);
+    ok('Created an empty database: ' + dbName);
   } else {
-    okF('دیتابیس وصل شد: ' + dbName + ' (' + String(dbId).slice(0, 8) + '…)', 'Database attached: ' + dbName + ' (' + String(dbId).slice(0, 8) + '…)');
+    ok('Database attached: ' + dbName + ' (' + String(dbId).slice(0, 8) + '…)');
   }
   const before = await d1Snapshot(accountId, dbId);
+  await ensureD1Ready(accountId, dbId, dbName);
   if (before) console.log('     row census before: ' + Object.entries(before).map(([k, v]) => k + '=' + v).join(', '));
-  else warnF('شمارش ردیف‌ها با این توکن ممکن نیست (نیاز به دسترسی D1 query) — این آپدیت به هر حال هیچ داده‌ای حذف نمی‌کند.', 'Row census not available with this token (D1 query) — the update never deletes data regardless.');
+  else warn('Row census not available with this token (D1 query) — the update never deletes data regardless.');
 
   // ---------- [4/6] source + identity
-  nextStep('Fetch the source and rebuild the identity', 'آوردن سورس و بازسازی هویت اختصاصی');
+  nextStep('Fetch the source and rebuild the identity');
   const src = await prepareSource(rl);
   const scan = scanKeywords(src.path);
-  if (scan.hits > 0) fail('سورس هنوز ' + scan.hits + ' خط با کلیدواژهٔ حساس دارد! | Source still has ' + scan.hits + ' lines with identifiable keywords!');
+  if (scan.hits > 0) fail('Source still has ' + scan.hits + ' lines with identifiable keywords!');
   ok('Source ready: ' + (scan.size / 1024).toFixed(0) + 'KB, zero identifiable keywords');
   let seed = null;
   if (noFingerprint) {
-    warnF('--no-fingerprint: نسخهٔ مشترک مخیشه مستقر می‌شود.', '--no-fingerprint: deploying the shared repository build.');
+    warn('--no-fingerprint: deploying the shared repository build.');
   } else if (profile.fingerprint && profile.seed) {
     seed = rotate ? newSeed() : profile.seed;
-    if (rotate) console.log('  --rotate: این پنل هویت ساخت کاملاً جدید می‌گیرد. | --rotate: this panel gets a brand-new build identity.');
-    else console.log('  هویت ساخت قبلی همین پنل حفظ می‌شود. | Keeping this panel\'s existing build identity.');
+    if (rotate) console.log('  --rotate: this panel gets a brand-new build identity.');
+    else console.log('  Keeping this panel\'s existing build identity.');
   } else {
-    const add = await ask(rl, 'This panel has no private build identity yet — add one now? (y/n)', 'y', 'این پنل هنوز هویت اختصاصی ندارد؛ حالا ساخته شود؟ (y/n — Enter = بله)');
+    const add = await ask(rl, 'This panel has no private build identity yet — add one now? (y/n)', 'y');
     if (add.toLowerCase() === 'y') seed = newSeed();
   }
   const build = seed ? fingerprint(src.path, seed) : { path: src.path, names: null, rows: 0 };
 
   // ---------- [5/6] upload
-  nextStep('Upload the update', 'آپلود آپدیت');
+  nextStep('Upload the update');
   await uploadWorker(accountId, workerName, build.path, dbId, dbName);
 
   // ---------- [6/6] prove the data is intact
-  nextStep('Verify nothing was lost', 'اثبات اینکه هیچ داده‌ای از دست نرفته');
-  why(
-    'تعداد ردیف همهٔ جدول‌ها دوباره شمرده می‌شود و با قبل مقایسه می‌شود.',
-    'Every table row count is read again and compared with the value taken before the upload.'
-  );
+  nextStep('Verify nothing was lost');
+  why('Every table row count is read again and compared with the value taken before the upload.');
   const after = await d1Snapshot(accountId, dbId);
   if (before && after) {
-    if (sameCensus(before, after)) okF('دیتابیس سالم است: ' + Object.keys(after).length + ' جدول با تعداد ردیف یکسان', 'Database intact: ' + Object.keys(after).length + ' tables with identical row counts');
-    else warnF('تعداد ردیف‌ها تغییر کرد (' + JSON.stringify(before) + ' → ' + JSON.stringify(after) + '). این آپدیت هیچ‌چیز حذف نمی‌کند — احتمالاً خود پنل ردیف جدید نوشته.', 'Row census changed. This update never deletes anything — check whether the panel itself wrote new rows.');
-  } else warnF('شمارش مجدد ردیف‌ها ممکن نشد (نیاز به دسترسی D1 query).', 'Could not re-run the row census (needs D1 query access).');
+    if (sameCensus(before, after)) ok('Database intact: ' + Object.keys(after).length + ' tables with identical row counts');
+    else warn('Row census changed. This update never deletes anything — check whether the panel itself wrote new rows.');
+  } else warn('Could not re-run the row census (needs D1 query access).');
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : `https://${workerName}.${subdomain}.workers.dev/panel`;
-  const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain });
+  const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain, srcPath: src.path, seed });
   console.log(`
 ${line}
-  🔄 آپدیت تمام شد — همان دیتابیس، همان آدرس، بایت‌های تازه‌ساخته‌شده:
+  🔄 Update complete — same database, same address, freshly rebuilt bytes:
         ${url}
-        Update complete — same database, same address, freshly rebuilt bytes:
         ${health.ok ? 'responding now ✔' : 'not answered from this machine yet (a filtered network or route propagation; the deploy itself was verified byte for byte)'}
-        ${health.ok ? 'همین حالا جواب می‌دهد ✔' : 'از این ماشین هنوز جواب نگرفت (شبکهٔ فیلتریا انتشار مسیر؛ خودِ نصب بایت‌به‌بایت تأیید شده)'}
       ${build.names ? 'Build identity kept for this panel: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
-      ${build.names ? 'هویت ساخت این پنل حفظ شد: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'نسخهٔ مشترک مخیشه مستقر شد.'}
 ${line}`);
+  const finalSeed = (health.rebuilt && health.rebuilt.seed) || seed || profile.seed;
+  const finalNames = (health.rebuilt && health.rebuilt.names) || build.names || null;
+  const finalRows = (health.rebuilt && health.rebuilt.rows) || build.rows || 0;
+  if (health.rebuilt) console.log('  Note: the panel kept tripping its integrity check, so this update rebuilt it with a brand-new identity. The database was never touched.');
   saveProfile({
     ...profile,
     accountId, workerName, dbName, dbId, subdomain, panelUrl: url,
-    seed: seed || profile.seed, fingerprint: !!seed,
-    names: build.names || null, rows: build.rows || 0,
+    seed: finalSeed, fingerprint: !!finalSeed,
+    names: finalNames, rows: finalRows,
     source: src.fresh ? 'downloaded' : 'local',
     updatedAt: new Date().toISOString(),
     healedAt: health.healed ? new Date().toISOString() : (profile.healedAt || null),
   });
   cleanup();
-  console.log('\nتمام شد. موفق باشید! 🌐  |  Done. Good luck!');
+  console.log('\nDone. Good luck! 🌐');
 }
 
 // Build a private copy of the panel source without touching the Cloudflare API.
@@ -1316,24 +1463,21 @@ async function personalizeOnlyMain() {
   const rotate = process.argv.includes('--rotate');
   const seed = profile && profile.seed && !rotate ? profile.seed : newSeed();
   console.log('Personalise-only mode: a private copy of the source, no Cloudflare calls\n');
-  console.log('حالت فقط-شخصی‌سازی: یک نسخهٔ خصوصی از سورس، بدون هیچ تماس با کلودفلر\n');
-  console.log('  build identity seed: ' + seed + (profile && profile.seed && !rotate ? '   (از پروفایل ذخیره‌شده / from the saved profile)' : ''));
+  console.log('  build identity seed: ' + seed + (profile && profile.seed && !rotate ? '   (from the saved profile)' : ''));
   const src = await prepareSource(rl);
   const r = personalize(readFileSync(src.path, 'utf8'), seed);
-  if (!r.ok) fail('شخصی‌سازی انجام نشد: ' + r.problems.join(' / '), 'Personalisation failed: ' + r.problems.join(' / '));
+  if (!r.ok) fail('Personalisation failed: ' + r.problems.join(' / '));
   const out = join(process.cwd(), 'Source-personalized.js');
   writeFileSync(out, r.out);
   const chk = spawnSync(process.execPath, ['--check', out], { encoding: 'utf8' });
   if (chk.status !== 0) fail('The personalised copy failed a syntax check.', (chk.stderr || '').split('\n').slice(0, 3).join(' '));
   const scan = scanKeywords(out);
   console.log('  rows re-keyed: ' + r.entries + ' | identifiers renamed: ' + Object.keys(r.names).length);
-  console.log('  ردیف‌های بازکلیدگذاری‌شده: ' + r.entries + ' | شناسه‌های تغییرنام‌یافته: ' + Object.keys(r.names).length);
   console.log('  new internal names: ' + Object.values(r.names).slice(0, 5).join(', ') + ' …');
   console.log(`  ${out} (${(scan.size / 1024).toFixed(0)}KB, keyword survivors ${scan.hits}, syntax check passed)`);
   if (rl) rl.close();
   if (scan.hits > 0) { process.exitCode = 2; return; }
   console.log('  ✅ Personalised copy ready');
-  console.log('  ✅ نسخهٔ خصوصی آماده است');
 }
 
 function onUnhandled(e) {
@@ -1362,45 +1506,124 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, verifyDeployment, classifyProbe, probeOnce, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
 
-// Bilingual help, so a first-time owner knows what every flag does before running it.
+// Help, so a first-time owner knows what every flag does before running it.
 function helpText() {
   return `
 ${line}
-    ⚡ ویزارد نصب زئوس — راهنما  |  Zeus Install Wizard — help
+    ⚡ Zeus Install Wizard — help
 ${line}
-    استفاده / usage:
-      node wizard.mjs                 نصب کامل تعاملی · full interactive install
-      node wizard.mjs --update        آپدیت با تنظیمات ذخیره‌شده · update with saved defaults
-      node wizard.mjs --prepare-only  فقط بررسی سورس، بدون کلودفلر · validate the source only
-      node wizard.mjs --personalize   ساخت نسخهٔ خصوصی، بدون کلودفلر · build a private copy
-      node wizard.mjs --token-link    فقط چاپ لینک ساخت توکن · only print the token link
-      node wizard.mjs --rotate        هویت ساخت جدید · mint a brand-new build identity
-      node wizard.mjs --no-fingerprint  نصب نسخهٔ مشترک مخیشه · deploy the shared build
-      node wizard.mjs --help          این راهنما · this help
+    Usage:
+      node wizard.mjs                 full interactive install
+      node wizard.mjs --update        update with saved defaults
+      node wizard.mjs --prepare-only  validate the source only, no Cloudflare calls
+      node wizard.mjs --personalize   build a private copy, no Cloudflare calls
+      node wizard.mjs --token-link    only print the token-creation link
+      node wizard.mjs --rotate        mint a brand-new build identity
+      node wizard.mjs --no-fingerprint  deploy the shared repository build unchanged
+      node wizard.mjs --help          this help
+      node wizard.mjs --doctor        diagnose a deployed worker (read-only)
 
-    متغیرهای محیطی / environment:
-      ZEUS_CF_TOKEN       خواندن توکن از محیط (بدون تایپ) · read the API token from the env
-      ZEUS_PROBE_WAIT_MS  زمان انتظار برای انتشار آدرس (پیش‌فرض ۹۰۰۰۰) · propagation wait
-      ZEUS_PROBE_URL      آدرس سفارشی برای چک نهایی · custom health-probe address
+    Environment:
+      ZEUS_CF_TOKEN       read the API token from the env instead of typing it
+      ZEUS_PROBE_WAIT_MS  how long the final address check waits for propagation (default 90000)
+      ZEUS_PROBE_URL      custom address for the final health check (used by tests)
 
-    نکتهٔ امنیتی / safety: توکن شما هیچ‌جا ذخیره یا چاپ نمی‌شود؛ همیشه به شکل •••••••• دیده می‌شود.
+    Safety: your token is never stored or printed — it always shows as ••••••••.
 ${line}`;
+}
+
+// ---------------------------------------------------------------- doctor
+// Read-only diagnosis of a deployed worker: settings, D1, bytes and routes, with one
+// recommended action at the end. Nothing is uploaded, changed or deleted here — run it
+// and paste the output when asking for help.
+// Usage: node wizard.mjs --doctor [worker-name]
+async function doctorMain() {
+  await loadPipedInput();
+  const rl = pipedLines ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
+  activeRl = rl;
+  const profile = loadProfile() || {};
+  const argWorker = process.argv[process.argv.indexOf('--doctor') + 1];
+  const defWorker = (argWorker && !argWorker.startsWith('--')) ? argWorker : (profile.workerName || '');
+  console.log('Doctor mode: read-only diagnosis, nothing is changed or deleted\n');
+  const envTok = tokenFromEnv();
+  if (envTok) {
+    TOKEN = envTok;
+    console.log('  API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
+  } else {
+    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
+  }
+  const verify = await cf('/user/tokens/verify');
+  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions.');
+  ok('Token is valid');
+  let accountId = profile.accountId || '';
+  if (!accountId) {
+    const accounts = await cf('/accounts?per_page=50');
+    if (!accounts.ok || !accounts.data.result?.length) fail('Could not list accounts with this token.', 'Pass an Account ID that this token can access.');
+    accountId = accounts.data.result[0].id;
+    console.log('  Using account: ' + (accounts.data.result[0].name || accountId));
+  }
+  const workerName = (await ask(rl, 'Worker name', defWorker)).trim();
+  if (!workerName) fail('No worker name given.', 'Run again as: node wizard.mjs --doctor <worker-name>.');
+  console.log('\n  --- worker settings ---');
+  const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+  if (!st.ok) fail('Could not read the worker settings (' + (st.errors || ('HTTP ' + st.status)) + ').', 'Check the worker name and that the token lists this account.');
+  const res = st.data.result || {};
+  const dateOk = (res.compatibility_date || '') >= REQUIRED_COMPAT_DATE;
+  const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (res.compatibility_flags || []).includes(f));
+  console.log('  compatibility_date : ' + (res.compatibility_date || '(none)') + (dateOk ? '  ✅' : '  ❌ older than the required ' + REQUIRED_COMPAT_DATE));
+  console.log('  compatibility_flags: ' + JSON.stringify(res.compatibility_flags || []) + (flagsOk ? '  ✅' : '  ❌ missing ' + REQUIRED_COMPAT_FLAGS.join(',')));
+  const d1 = (res.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
+  console.log('  D1 binding         : ' + (d1 ? ('DB -> ' + String(d1.id || d1.database_id || '').slice(0, 8) + '…  ✅') : 'NONE  ❌ the panel cannot work without it'));
+  if (profile.dbId && d1 && (d1.id || d1.database_id) !== profile.dbId) warn('The binding points at a different database than the saved profile (' + String(profile.dbId).slice(0, 8) + '…).');
+  if (d1 && (d1.id || d1.database_id)) {
+    console.log('\n  --- D1 database ---');
+    const dl = await cf(`/accounts/${accountId}/d1/database/${d1.id || d1.database_id}`);
+    console.log('  database           : ' + (dl.ok ? dl.data.result.name + '  ✅' : 'LOOKUP FAILED ' + (dl.errors || dl.status)));
+    const census = await d1Snapshot(accountId, d1.id || d1.database_id);
+    console.log('  tables             : ' + (census ? Object.entries(census).map(([k, v]) => k + '=' + v).join(', ') + '  ✅' : 'query failed (token needs D1 query access)'));
+  }
+  console.log('\n  --- deployed bytes ---');
+  const back = await deployedBytes(accountId, workerName);
+  if (!back.ok || !back.bytes) {
+    console.log('  Could not read the deployed script (' + (back.errors || ('HTTP ' + back.status)) + ').');
+  } else {
+    const txt = back.bytes.toString('utf8');
+    const det = detectPrelude(txt);
+    console.log('  size               : ' + back.bytes.length + 'B' + (back.bytes.length > 800000 ? '  ✅' : '  ❌ looks incomplete — re-run the installer'));
+    console.log('  module export      : ' + (/export\s+default/.test(txt) ? 'present  ✅' : 'MISSING  ❌ the upload is damaged — re-run the installer'));
+    console.log('  payload table      : ' + (det ? det.blobs.length + ' rows, decoder ' + det.getName + '  ✅' : 'NOT FOUND  ❌ the upload is damaged — re-run the installer'));
+  }
+  console.log('\n  --- routes ---');
+  const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
+  const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
+  const probes = await probeAll(probeBase(workerName, subdomain));
+  for (const p of probes) {
+    const mark = p.code ? ('error code ' + p.code) : (p.net ? ('network: ' + p.net) : (p.text ? p.text.slice(0, 60) : ''));
+    console.log('  ' + p.path.padEnd(20) + String(p.status).padEnd(6) + mark);
+  }
+  const verdict = classifyDeployment(probes);
+  console.log('\n  verdict: ' + verdict);
+  if (verdict === 'ok') console.log('  ✅ The panel answers every route — nothing to fix. If a browser still shows an error, hard-refresh (Ctrl+Shift+R) or check your VPN.');
+  else if (verdict === 'binding') console.log('  Next step: run `node wizard.mjs --update` and accept the saved database — the wizard re-attaches the D1 binding without deleting anything.');
+  else if (verdict === 'integrity') console.log('  Next step: run `node wizard.mjs --update --rotate` — the panel needs a freshly rebuilt identity, and your data stays in place.');
+  else if (verdict === 'stuck') console.log('  Next step: run `node wizard.mjs --update` — the wizard deletes only the worker script and redeploys the verified bytes; the database is never touched.');
+  else console.log('  Next step: wait a few minutes for the address to propagate, then run the doctor again. If it persists, attach a custom domain.');
+  if (rl) rl.close();
 }
 
 if (looksImported()) {
   // module import: helpers only, no prompts, no network
 } else if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log(helpText());
+} else if (process.argv.includes('--doctor')) {
+  doctorMain().catch(onUnhandled);
 } else if (process.argv.includes('--token-link')) {
-  console.log('\n  🔗 لینک آمادهٔ ساخت توکن کلودفلر (دسترسی‌های لازم از قبل تنظیم شده + اسم تصادفی):');
-  console.log('  Cloudflare API token-creation link (permissions pre-set + random name):\n');
+  console.log('\n  Cloudflare API token-creation link (permissions pre-set + random name):\n');
   console.log('  ' + makeTokenUrl());
-  console.log('\n  در مرورگر باز کنید → Continue to summary → Create Token → کپی توکن.');
-  console.log('  Open it in a browser → Continue to summary → Create Token → copy the token.');
-  console.log('  🔒 توکن را فقط در خود ویزارد بچسبانید؛ هرگز در فایل یا لاگ ذخیره نمی‌شود.');
-  console.log('  🔒 Paste the token only into the wizard — it is never written to a file or a log.\n');
+  console.log('\n  Open it in a browser → Continue to summary → Create Token → copy the token.');
+  console.log('  Paste the token only into the wizard — it is never written to a file or a log.\n');
 } else if (process.argv.includes('--update')) {
   updateMain().catch(onUnhandled);
 } else if (process.argv.includes('--personalize')) {
