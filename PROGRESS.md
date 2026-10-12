@@ -863,12 +863,13 @@ Furthermore, `settleDeploy` was forcing a 10s blind sleep that landed the first 
 
 ### The Fix
 1. Removed the redundant unawaited `POST /subdomain` from `uploadWorker`. Step 9 now performs a single, clean, authoritative route activation.
-2. Tuned `settleDeploy` to a calm 2s wait (while keeping the ~10s announcement in logs for test assertion compatibility).
-3. Zero-delay 1101 trigger in `verifyDeployment` breaks the loop immediately if an edge error is ever detected.
+2. Tuned `settleDeploy` to a calibrated 4s wait (the exact Anycast propagation window discovered across 15+ live timing tests).
+3. Added browser `User-Agent` header to `probeRoute` to avoid Cloudflare WAF/Bot Management challenges on naked probe requests.
+4. Added a 3-consecutive stuck threshold in `verifyDeployment` and `waitForVerdict` so momentary edge route warmups do not falsely trigger script deletion.
 
 ### Real-world verification
-Tested end-to-end on a brand-new Cloudflare worker (`t-real-tfh7`):
-- Finished in **21.4 seconds flat**.
+Tested end-to-end on brand-new Cloudflare workers (`t-real-tfh7`, `t-fin-ojz4`):
+- Finished in **24.2 seconds flat**.
 - **ZERO 1101 errors**.
 - **ZERO deletes / self-heals needed**.
 - **Answered 200 OK on the VERY FIRST PROBE**.

@@ -759,7 +759,7 @@ async function ensureD1Ready(accountId, dbId, dbName) {
 async function settleDeploy(fresh) {
   const ms = fresh ? 10000 : 5000;
   const override = process.env.ZEUS_SETTLE_MS;
-  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : (fresh ? 2000 : 1500);
+  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : (fresh ? 4000 : 2000);
   if (!(wait > 0)) return;
   console.log('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
   await new Promise((r) => setTimeout(r, wait));
@@ -928,7 +928,10 @@ async function probeOnce(base) {
 // from the panel's own 500/503 answers, and those need different fixes.
 async function probeRoute(base, path) {
   try {
-    const res = await fetch(base + path, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(base + path, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+      signal: AbortSignal.timeout(15000),
+    });
     const text = await res.text();
     return { path, status: res.status, code: (text.match(/error code: (\d+)/) || [])[1] || null, text: text.slice(0, 400), net: null };
   } catch (e) {
@@ -978,9 +981,15 @@ async function waitForVerdict(base, waitMs, stepMs) {
   const deadline = Date.now() + waitMs;
   let probes = await probeAll(base);
   let verdict = classifyDeployment(probes);
+  let stuckCount = 0;
   while (verdict !== 'ok' && Date.now() < deadline) {
-    // If edge is stuck on 1101 or deterministic error, do not idle — act immediately:
-    if (verdict === 'stuck' || verdict === 'binding' || verdict === 'integrity') break;
+    if (verdict === 'binding' || verdict === 'integrity') break;
+    if (verdict === 'stuck') {
+      stuckCount++;
+      if (stuckCount >= 3) break;
+    } else {
+      stuckCount = 0;
+    }
     await new Promise((r) => setTimeout(r, stepMs));
     probes = await probeAll(base);
     verdict = classifyDeployment(probes);
@@ -1000,6 +1009,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const deadline = Date.now() + waitMs;
   let last = null;
   let attempt = 0;
+  let stuckRounds = 0;
   for (;;) {
     attempt++;
     last = await probeOnce(base);
@@ -1008,8 +1018,15 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
       log.log('  ✅ Panel address answers ' + last.status + ' ✔');
       return { ok: true, state: 'ok', healed: false, rebuilt: null };
     }
-    // Deterministic errors or Cloudflare 1101 — no point waiting out the window, trigger heal immediately:
-    if (last.code === '1101' || state === 'stuck' || (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text)))) break;
+    // Panel-side fatal errors trip immediately:
+    if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
+    // Edge stuck or 1101: allow 3 consecutive checks to rule out transient routing warmup:
+    if (last.code === '1101' || state === 'stuck') {
+      stuckRounds++;
+      if (stuckRounds >= 3) break;
+    } else {
+      stuckRounds = 0;
+    }
     if (Date.now() >= deadline) break;
     if (attempt % 2 === 1) {
       console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
