@@ -766,13 +766,13 @@ async function ensureD1Ready(accountId, dbId, dbName) {
 
 // Short pause between a verified upload and switching the public address on: attaching
 // the route is not instant, and the first probe should not race it. Brand-new workers
-// (a route that never existed) announce ~10s, re-uploads to an existing worker ~5s.
-// ZEUS_SETTLE_MS overrides the actual wait (tests use it to stay fast); the message
+// (a route that never existed) get ~10s, re-uploads to an existing worker ~5s.
+// ZEUS_SETTLE_MS overrides only the actual wait (tests use it to stay fast); the message
 // always states the intended pause.
 async function settleDeploy(fresh) {
   const ms = fresh ? 10000 : 5000;
   const override = process.env.ZEUS_SETTLE_MS;
-  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : (fresh ? 4000 : 2000);
+  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : ms;
   if (!(wait > 0)) return;
   console.log('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
   await new Promise((r) => setTimeout(r, wait));
@@ -934,7 +934,7 @@ function probeBase(workerName, subdomain) {
 }
 
 async function probeOnce(base) {
-  return probeRoute(base, '/panel');
+  return probeRoute(base, '/');
 }
 
 // One route, with the body kept: the body is what separates a Cloudflare 1101 page
@@ -946,7 +946,11 @@ async function probeRoute(base, path) {
       signal: AbortSignal.timeout(15000),
     });
     const text = await res.text();
-    return { path, status: res.status, code: (text.match(/error code: (\d+)/) || [])[1] || null, text: text.slice(0, 400), net: null };
+    const has1101 = /error code: 1101|cf-error-code">1101|Worker threw exception/i.test(text);
+    const code = (text.match(/error code: (\d+)/) || text.match(/cf-error-code">(\d+)/) || [])[1] || (has1101 ? '1101' : null);
+    const status = has1101 ? 500 : res.status;
+    const snippet = has1101 ? 'error code: 1101 (Worker threw exception)' : text.slice(0, 400);
+    return { path, status, code, text: snippet, net: null };
   } catch (e) {
     return { path, status: 0, code: null, text: '', net: String((e.cause && e.cause.code) || e.code || e.message).slice(0, 40) };
   }
@@ -960,10 +964,10 @@ async function probeAll(base) {
 }
 
 function classifyProbe(p) {
-  if (p.status >= 200 && p.status < 400) return 'ok';
-  if (p.code === '1101' || p.status >= 500) return 'stuck';
+  if (p.code === '1101' || /error code: 1101|Worker threw exception/i.test(p.text || '') || p.status >= 500) return 'stuck';
   if (p.status === 404) return 'propagating';
   if (p.net) return 'propagating';
+  if (p.status >= 200 && p.status < 400) return 'ok';
   return 'other';
 }
 
@@ -979,15 +983,14 @@ function classifyDeployment(probes) {
   const texts = probes.map((p) => p.text || '').join('\n');
   const codes = probes.map((p) => p.code);
   const statuses = probes.map((p) => p.status);
-  const panelProbe = probes.find((p) => p.path === '/panel');
-  const rootProbe = probes.find((p) => p.path === '/');
-  if (panelProbe && panelProbe.status >= 200 && panelProbe.status < 400 && (!rootProbe || (rootProbe.status >= 200 && rootProbe.status < 400))) return 'ok';
-  if (probes.every((p) => p.status >= 200 && p.status < 400)) return 'ok';
   if (BINDING_MISSING_RE.test(texts)) return 'binding';
   if (INTEGRITY_TRIP_RE.test(texts) && statuses.some((s) => s === 503)) return 'integrity';
-  if (codes.includes('1101')) return 'stuck';
-  if (statuses.every((s) => s === 404 || s === 0)) return 'propagating';
+  if (codes.includes('1101') || /error code: 1101|Worker threw exception/i.test(texts)) return 'stuck';
   if (statuses.some((s) => s >= 500)) return 'stuck';
+  if (statuses.every((s) => s === 404 || s === 0)) return 'propagating';
+  if (probes.every((p) => p.status >= 200 && p.status < 400)) return 'ok';
+  const panelProbe = probes.find((p) => p.path === '/panel');
+  if (panelProbe && panelProbe.status >= 200 && panelProbe.status < 400) return 'ok';
   if (statuses.some((s) => s >= 200 && s < 400)) return 'partial';
   return 'other';
 }
@@ -1013,8 +1016,8 @@ async function waitForVerdict(base, waitMs, stepMs) {
 // never fire for a simply-filtered workers.dev).
 async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true, srcPath = null, seed = null }) {
   const base = probeBase(workerName, subdomain);
-  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 25000);
-  const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 2500);
+  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 90000);
+  const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 4000);
   const deadline = Date.now() + waitMs;
   let last = null;
   let attempt = 0;
@@ -1028,6 +1031,8 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     }
     // Panel-side fatal errors trip immediately:
     if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
+    // 1101 or stuck edge state detected: break immediately to begin healing:
+    if (last.code === '1101' || state === 'stuck') break;
     if (Date.now() >= deadline) break;
     if (attempt % 2 === 1) {
       console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');

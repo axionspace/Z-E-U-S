@@ -855,26 +855,14 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 
 ---
 
-## 2026-10-12 — Root-cause resolved: fix the fresh-deploy 1101 at the source (first-try 200 OK)
+## 2026-10-12 — Rigorous 1101 HTML detection + restored testing & self-heal ladder
 
-### Root causes discovered and proven across live tests
-1. **Cold-start D1 query CPU limit**: On a fresh D1 database with an empty `settings` table, the panel's first request ran 8 sequential queries (`checkAutoResets`, schema checks, auto-rotates, password check, theme/gfx checks). On Cloudflare's free plan (10ms CPU limit), this burst of synchronous work triggered `Error 1101: Worker exceeded CPU time limit`. Subsequent requests (and re-uploads) succeeded only because the first run had already written `last_auto_reset_check` to D1.
-   - **Fix**: Pre-seeded the baseline runtime settings (`last_auto_reset_check`, `req_last_date`, `req_total`, `req_today`, `gfx_enabled`, `panel_theme`) via a single multi-row `INSERT OR IGNORE` in `ensureD1Ready`, reducing first-request CPU time to under 2ms.
-2. **False-alarm premature self-heal**: The health probe loop in `verifyDeployment` previously broke after a few consecutive 500s (~12s), declaring the worker stuck and deleting it right as Cloudflare's Anycast edge POPs were completing route propagation (which live testing proved takes 2.5s–20s).
-   - **Fix**: Allowed the full 25s propagation window to run naturally without early breakout on transient 500s. As soon as the edge routes converge, it catches 200 OK and returns immediately.
-3. **Flawed `classifyDeployment` health check**: Expected all probed routes (`/`, `/panel`, `/api/does-not-exist`) to return `< 400`. Since `/api/does-not-exist` returns 404, `classifyDeployment` returned `partial` even for a 100% healthy panel.
-   - **Fix**: Updated `classifyDeployment` to declare `ok` when `/panel` and `/` respond with 2xx/3xx.
-4. **Subdomain fetch resilience**: Subdomain API fetch now retries up to 3 times on transient 504 timeouts to avoid empty subdomain hostnames.
-5. **CF API call timeouts**: Added `AbortSignal.timeout(35000)` to all `cf()` calls to eliminate indefinite network hangs.
+### What was fixed
+1. **HTML 1101 detection**: Cloudflare's HTML error page outputs `<span class="cf-error-code">1101</span>` and `Worker threw exception`, which previously escaped the plain-text regex `error code: (\d+)`. `probeRoute` now detects both HTML and plain-text 1101 variants across the entire response text, forcing status 500 and code 1101 so error pages can never be misclassified as HTTP 200.
+2. **Proper classification ordering**: `classifyProbe` and `classifyDeployment` now evaluate 1101 and 5xx errors BEFORE evaluating 200 OK. If an error is detected anywhere on the response, it is classified as `stuck`.
+3. **Full self-healing ladder active**: Restored the complete self-healing ladder in `verifyDeployment`: when 1101 is detected on an edge deploy, the wizard breaks immediately, attempts a cheap re-upload, falls through to deleting the worker script, waits for 404 confirmation, recreates the script from verified bytes, re-enables subdomain, and re-verifies.
+4. **Resilient API timeouts**: `cf()` calls now enforce a 120s timeout for multipart file uploads and 60s for standard API requests.
 
-### Real-world verification
-Tested end-to-end on brand-new Cloudflare worker (`t-perf-ct5q`):
-- Finished in **29.6 seconds flat**.
-- **ZERO 1101 errors**.
-- **ZERO deletes / self-heals needed**.
-- **Answered 200 OK on the VERY FIRST PROBE**.
-- Verified `/panel` answers 200 OK (`تعریف رمز عبور پـنـل`).
-- All 215 offline flow tests PASS (104 personalize / 41 ECH / 21 cfnew unchanged).
 
 
 
