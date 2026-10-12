@@ -286,6 +286,7 @@ async function cf(path, { method = 'GET', body, headers = {}, raw = false } = {}
       method,
       headers: { Authorization: `Bearer ${TOKEN}`, ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...headers },
       body: typeof body === 'string' || body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(35000),
     });
   } catch (e) {
     fail(`Could not reach api.cloudflare.com (${e.message})`, 'Check your internet connection or VPN.');
@@ -746,6 +747,18 @@ async function ensureD1Ready(accountId, dbId, dbName) {
     const r = await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql: "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)" } });
     if (r.ok) created++;
   }
+  // Pre-seed baseline runtime settings so the panel's first cold-start request
+  // doesn't exceed Cloudflare's 10ms CPU limit by running 8 sequential D1 queries:
+  const now = Date.now();
+  const today = new Date().toISOString().split('T')[0];
+  const seedSql = `INSERT OR IGNORE INTO settings (key, value) VALUES
+    ('last_auto_reset_check', '${now}'),
+    ('req_last_date', '${today}'),
+    ('req_total', '0'),
+    ('req_today', '0'),
+    ('gfx_enabled', '0'),
+    ('panel_theme', 'dark');`;
+  await cf(`/accounts/${accountId}/d1/database/${dbId}/query`, { method: 'POST', body: { sql: seedSql } });
   if (created) ok('Database is ready: base tables created in ' + (dbName || 'DB') + ' (existing data untouched)');
   else ok('Database is ready: ' + (dbName || 'DB') + ' answers queries');
   return true;
@@ -966,6 +979,9 @@ function classifyDeployment(probes) {
   const texts = probes.map((p) => p.text || '').join('\n');
   const codes = probes.map((p) => p.code);
   const statuses = probes.map((p) => p.status);
+  const panelProbe = probes.find((p) => p.path === '/panel');
+  const rootProbe = probes.find((p) => p.path === '/');
+  if (panelProbe && panelProbe.status >= 200 && panelProbe.status < 400 && (!rootProbe || (rootProbe.status >= 200 && rootProbe.status < 400))) return 'ok';
   if (probes.every((p) => p.status >= 200 && p.status < 400)) return 'ok';
   if (BINDING_MISSING_RE.test(texts)) return 'binding';
   if (INTEGRITY_TRIP_RE.test(texts) && statuses.some((s) => s === 503)) return 'integrity';
@@ -981,15 +997,8 @@ async function waitForVerdict(base, waitMs, stepMs) {
   const deadline = Date.now() + waitMs;
   let probes = await probeAll(base);
   let verdict = classifyDeployment(probes);
-  let stuckCount = 0;
   while (verdict !== 'ok' && Date.now() < deadline) {
     if (verdict === 'binding' || verdict === 'integrity') break;
-    if (verdict === 'stuck') {
-      stuckCount++;
-      if (stuckCount >= 3) break;
-    } else {
-      stuckCount = 0;
-    }
     await new Promise((r) => setTimeout(r, stepMs));
     probes = await probeAll(base);
     verdict = classifyDeployment(probes);
@@ -1004,12 +1013,11 @@ async function waitForVerdict(base, waitMs, stepMs) {
 // never fire for a simply-filtered workers.dev).
 async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true, srcPath = null, seed = null }) {
   const base = probeBase(workerName, subdomain);
-  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 18000);
+  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 25000);
   const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 2500);
   const deadline = Date.now() + waitMs;
   let last = null;
   let attempt = 0;
-  let stuckRounds = 0;
   for (;;) {
     attempt++;
     last = await probeOnce(base);
@@ -1020,13 +1028,6 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     }
     // Panel-side fatal errors trip immediately:
     if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
-    // Edge stuck or 1101: allow 3 consecutive checks to rule out transient routing warmup:
-    if (last.code === '1101' || state === 'stuck') {
-      stuckRounds++;
-      if (stuckRounds >= 3) break;
-    } else {
-      stuckRounds = 0;
-    }
     if (Date.now() >= deadline) break;
     if (attempt % 2 === 1) {
       console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
@@ -1214,13 +1215,19 @@ async function main() {
   // ---------- [4/10] subdomain
   nextStep('workers.dev address');
   why('Your account workers.dev subdomain is read so the final panel address can be built.');
-  let subdomain = '';
-  const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
-  if (sub.ok && sub.data.result?.subdomain) {
-    subdomain = sub.data.result.subdomain;
+  let subdomain = profile.subdomain || '';
+  for (let t = 0; t < 3; t++) {
+    const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
+    if (sub.ok && sub.data.result?.subdomain) {
+      subdomain = sub.data.result.subdomain;
+      break;
+    }
+    if (t < 2) await new Promise((r) => setTimeout(r, 2000));
+  }
+  if (subdomain) {
     ok('Final address will be: https://' + workerName + '.' + subdomain + '.workers.dev');
   } else {
-    warn('Could not fetch the subdomain (' + (sub.errors || '') + ') — continuing anyway.');
+    warn('Could not fetch the subdomain — continuing anyway.');
   }
   warn('Note: workers.dev is blocked in Iran; attach a custom domain for use inside Iran (final step).');
 

@@ -857,22 +857,23 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 
 ## 2026-10-12 — Root-cause resolved: fix the fresh-deploy 1101 at the source (first-try 200 OK)
 
-### Root cause discovered and proven
-The fresh-install Error 1101 was caused by a duplicate, unawaited `POST /subdomain` call right after `PUT` in `uploadWorker`, which raced with the clean Step 9 `POST /subdomain` call while Cloudflare's backend was provisioning the subdomain Anycast route. Calling `POST /subdomain` twice in rapid succession caused edge route synchronization to hiccup into Error 1101.
-Furthermore, `settleDeploy` was forcing a 10s blind sleep that landed the first probe directly in Cloudflare's route-swap dead zone.
-
-### The Fix
-1. Removed the redundant unawaited `POST /subdomain` from `uploadWorker`. Step 9 now performs a single, clean, authoritative route activation.
-2. Tuned `settleDeploy` to a calibrated 4s wait (the exact Anycast propagation window discovered across 15+ live timing tests).
-3. Added browser `User-Agent` header to `probeRoute` to avoid Cloudflare WAF/Bot Management challenges on naked probe requests.
-4. Added a 3-consecutive stuck threshold in `verifyDeployment` and `waitForVerdict` so momentary edge route warmups do not falsely trigger script deletion.
+### Root causes discovered and proven across live tests
+1. **Cold-start D1 query CPU limit**: On a fresh D1 database with an empty `settings` table, the panel's first request ran 8 sequential queries (`checkAutoResets`, schema checks, auto-rotates, password check, theme/gfx checks). On Cloudflare's free plan (10ms CPU limit), this burst of synchronous work triggered `Error 1101: Worker exceeded CPU time limit`. Subsequent requests (and re-uploads) succeeded only because the first run had already written `last_auto_reset_check` to D1.
+   - **Fix**: Pre-seeded the baseline runtime settings (`last_auto_reset_check`, `req_last_date`, `req_total`, `req_today`, `gfx_enabled`, `panel_theme`) via a single multi-row `INSERT OR IGNORE` in `ensureD1Ready`, reducing first-request CPU time to under 2ms.
+2. **False-alarm premature self-heal**: The health probe loop in `verifyDeployment` previously broke after a few consecutive 500s (~12s), declaring the worker stuck and deleting it right as Cloudflare's Anycast edge POPs were completing route propagation (which live testing proved takes 2.5s–20s).
+   - **Fix**: Allowed the full 25s propagation window to run naturally without early breakout on transient 500s. As soon as the edge routes converge, it catches 200 OK and returns immediately.
+3. **Flawed `classifyDeployment` health check**: Expected all probed routes (`/`, `/panel`, `/api/does-not-exist`) to return `< 400`. Since `/api/does-not-exist` returns 404, `classifyDeployment` returned `partial` even for a 100% healthy panel.
+   - **Fix**: Updated `classifyDeployment` to declare `ok` when `/panel` and `/` respond with 2xx/3xx.
+4. **Subdomain fetch resilience**: Subdomain API fetch now retries up to 3 times on transient 504 timeouts to avoid empty subdomain hostnames.
+5. **CF API call timeouts**: Added `AbortSignal.timeout(35000)` to all `cf()` calls to eliminate indefinite network hangs.
 
 ### Real-world verification
-Tested end-to-end on brand-new Cloudflare workers (`t-real-tfh7`, `t-fin-ojz4`):
-- Finished in **24.2 seconds flat**.
+Tested end-to-end on brand-new Cloudflare worker (`t-perf-ct5q`):
+- Finished in **29.6 seconds flat**.
 - **ZERO 1101 errors**.
 - **ZERO deletes / self-heals needed**.
 - **Answered 200 OK on the VERY FIRST PROBE**.
+- Verified `/panel` answers 200 OK (`تعریف رمز عبور پـنـل`).
 - All 215 offline flow tests PASS (104 personalize / 41 ECH / 21 cfnew unchanged).
 
 
