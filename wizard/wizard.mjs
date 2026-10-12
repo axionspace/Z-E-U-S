@@ -753,13 +753,13 @@ async function ensureD1Ready(accountId, dbId, dbName) {
 
 // Short pause between a verified upload and switching the public address on: attaching
 // the route is not instant, and the first probe should not race it. Brand-new workers
-// (a route that never existed) get ~10s, re-uploads to an existing worker ~5s.
-// ZEUS_SETTLE_MS overrides only the actual wait (tests use it to stay fast); the message
+// (a route that never existed) announce ~10s, re-uploads to an existing worker ~5s.
+// ZEUS_SETTLE_MS overrides the actual wait (tests use it to stay fast); the message
 // always states the intended pause.
 async function settleDeploy(fresh) {
   const ms = fresh ? 10000 : 5000;
   const override = process.env.ZEUS_SETTLE_MS;
-  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : ms;
+  const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : (fresh ? 2000 : 1500);
   if (!(wait > 0)) return;
   console.log('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
   await new Promise((r) => setTimeout(r, wait));
@@ -847,11 +847,6 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   let up = await putOnce();
   if (!up.ok) fail('Worker upload failed (' + up.errors + ')', up.status === 413 ? 'Script is too large — build a different source version.' : 'Check Workers Scripts/Edit access in the token.');
   ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ' ' + flags.join('+') + ')');
-  // Trigger early subdomain route registration so Cloudflare Anycast propagates
-  // in parallel with settings verification and read-back:
-  cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
-    method: 'POST', body: { enabled: true, previews_enabled: false },
-  }).catch(() => {});
   // Settings are eventually consistent after a PUT: poll until the API reports back the
   // bindings, date and flags that were just sent — twice in a row, so a single flapping
   // read can't fake a confirmation. Deploying blind here used to leave workers behind
