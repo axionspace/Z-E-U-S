@@ -984,6 +984,8 @@ async function waitForVerdict(base, waitMs, stepMs) {
   let probes = await probeAll(base);
   let verdict = classifyDeployment(probes);
   while (verdict !== 'ok' && Date.now() < deadline) {
+    // If edge is stuck on 1101 or deterministic error, do not idle — act immediately:
+    if (verdict === 'stuck' || verdict === 'binding' || verdict === 'integrity') break;
     await new Promise((r) => setTimeout(r, stepMs));
     probes = await probeAll(base);
     verdict = classifyDeployment(probes);
@@ -1011,8 +1013,8 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
       log.log('  ✅ Panel address answers ' + last.status + ' ✔');
       return { ok: true, state: 'ok', healed: false, rebuilt: null };
     }
-    // The panel's own answers are deterministic — no point waiting out the window.
-    if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
+    // Deterministic errors or Cloudflare 1101 — no point waiting out the window, trigger heal immediately:
+    if (last.code === '1101' || state === 'stuck' || (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text)))) break;
     if (Date.now() >= deadline) break;
     if (attempt % 2 === 1) {
       console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
