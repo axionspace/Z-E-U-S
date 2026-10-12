@@ -861,5 +861,7 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 1. **Removed redundant `wizard/zeus-wizard.mjs`**: `wizard/wizard.mjs` is the single canonical wizard file downloaded by `install.ps1`/`install.sh` and used in repository clones. Updated all tooling in `tools/` to import `wizard.mjs` directly.
 2. **Early parallel route registration**: right after `uploadWorker`'s PUT succeeds, `POST /subdomain` is immediately triggered in the background so Cloudflare Anycast edge route propagation runs concurrently while the wizard finishes settings confirmation and read-back verification (~10s head start).
 3. **Fast probe interval (2.5s) + live terminal feedback**: `verifyDeployment` probe interval reduced from 8s to 2.5s with live heartbeat output per attempt, catching edge convergence instantly instead of waiting up to 8s per retry.
+4. **Capped probe wait window (18s instead of 90s)**: rather than idling through 17+ checks (40-90s) when an edge route is in a poisoned initial state, the wizard triggers its self-heal ladder after ~18s, cutting deployment time from 1.5 minutes down to ~25-30s.
+
 
 

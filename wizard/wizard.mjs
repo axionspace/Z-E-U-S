@@ -998,7 +998,7 @@ async function waitForVerdict(base, waitMs, stepMs) {
 // never fire for a simply-filtered workers.dev).
 async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log = console, canHeal = true, srcPath = null, seed = null }) {
   const base = probeBase(workerName, subdomain);
-  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 90000);
+  const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 18000);
   const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 2500);
   const deadline = Date.now() + waitMs;
   let last = null;
