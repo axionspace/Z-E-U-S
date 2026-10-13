@@ -928,9 +928,15 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
 // worker to be deleted and deployed again — which this does once, by itself.
 const PROBE_BASE = (process.env.ZEUS_PROBE_URL || '').replace(/\/+$/, '');
 
+function makeWorkerUrl(workerName, subdomain, path = '') {
+  if (PROBE_BASE) return PROBE_BASE + (path ? (path.startsWith('/') ? path : '/' + path) : '');
+  const sub = (subdomain || '').replace(/^https?:\/\//i, '').replace(/\.workers\.dev$/i, '').replace(/^\.+|\.+$/g, '').trim();
+  const host = `${workerName}${sub ? '.' + sub : ''}.workers.dev`.replace(/\.+/g, '.');
+  return `https://${host}${path ? (path.startsWith('/') ? path : '/' + path) : ''}`;
+}
+
 function probeBase(workerName, subdomain) {
-  if (PROBE_BASE) return PROBE_BASE;
-  return `https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev`;
+  return makeWorkerUrl(workerName, subdomain);
 }
 
 async function probeOnce(base) {
@@ -1244,7 +1250,7 @@ async function main() {
     if (t < 2) await new Promise((r) => setTimeout(r, 2000));
   }
   if (subdomain) {
-    ok('Final address will be: https://' + workerName + '.' + subdomain + '.workers.dev');
+    ok('Final address will be: ' + makeWorkerUrl(workerName, subdomain));
   } else {
     warn('Could not fetch the subdomain — continuing anyway.');
   }
@@ -1318,7 +1324,7 @@ async function main() {
   }
   const { fresh } = await uploadWorker(accountId, workerName, build.path, dbId, dbName);
 
-  const panelUrl = `https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/panel`;
+  const panelUrl = makeWorkerUrl(workerName, subdomain, '/panel');
   const prof = {
     version: PROFILE_VERSION,
     seed: seed || null,
@@ -1346,7 +1352,7 @@ async function main() {
     });
   }
   if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
-  else ok('Enabled: https://' + workerName + (subdomain ? '.' + subdomain : '') + '.workers.dev');
+  else ok('Enabled: ' + makeWorkerUrl(workerName, subdomain));
   await settleDeploy(fresh);
 
   // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
@@ -1376,7 +1382,7 @@ ${line}
         ${panelUrl}
 
      🔗 User subscription pattern:
-        https://${workerName}${subdomain ? '.' + subdomain : ''}.workers.dev/sub/<username>
+        ${makeWorkerUrl(workerName, subdomain, '/sub/<username>')}
 
   ⚠️  First thing to do: open the panel address above and set the admin password.
      Until a password exists the panel answers its own API without one — that is the
@@ -1574,7 +1580,7 @@ async function updateMain() {
   } else warn('Could not re-run the row census (needs D1 query access).');
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
-  const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : `https://${workerName}.${subdomain}.workers.dev/panel`;
+  const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : makeWorkerUrl(workerName, subdomain, '/panel');
   const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain, srcPath: src.path, seed });
   console.log(`
 ${line}
