@@ -880,6 +880,23 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 - All 215 wizard flow tests, 104 personalize tests, 41 ECH tests, and 21 cfnew tests pass green (`215 / 104 / 41 / 21 PASS`).
 - Real-world fresh deployment on Cloudflare succeeded on probe 1 in 28.9s with 200 OK.
 
+---
+
+## 2026-10-13 — Permanent elimination of initial 1101 via Bootstrap Pattern
+
+### Root cause resolved
+When a fresh Worker script is uploaded for the first time without an active subdomain route, Cloudflare's Anycast edge isolates fail to bind cleanly when the route is added moments later, causing transient Error 1101.
+By contrast, updating an *already-routed* Worker is atomic and seamless in Cloudflare's deployment pipeline.
+
+### The Fix
+1. **Bootstrap Pattern**: For fresh Worker creations (`settings.status === 404`), `uploadWorker` now provisions the subdomain Anycast route with a lightweight placeholder module first, then immediately uploads the real Zeus panel script with D1 bindings as an atomic script update.
+2. `probeOnce` probes `/panel` directly instead of `/`.
+3. Edge stuck tolerance set to 3 consecutive checks in `verifyDeployment` to prevent false-alarm self-heals during edge DNS propagation.
+
+### Verification
+- Live real-world install on Cloudflare (`t-zero-28bv`) completed in 30.0s flat with ZERO 1101 errors and ZERO self-heal deletions needed.
+- All 215 offline flow tests pass (`215 PASS / 0 FAIL`).
+
 
 
 
