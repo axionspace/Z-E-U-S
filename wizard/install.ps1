@@ -154,8 +154,17 @@ Write-Host ""
 Write-Host "Downloading $Wizard..."
 $Downloaded = $false
 foreach ($Url in $Mirrors) {
+    # Every check lives inside this try block: with $ErrorActionPreference = "Stop"
+    # any failed read or check simply moves on to the next mirror. A truncated or
+    # wrong download must never reach node, or the user gets a cryptic error
+    # instead of an automatic retry.
     try {
         Invoke-WebRequest -Uri $Url -OutFile $WizardPath -UseBasicParsing -TimeoutSec 120
+        $txt = Get-Content $WizardPath -Raw -ErrorAction Stop
+        if ($txt.Length -lt 51200) { continue }
+        if ($txt -notmatch 'Zeus Install Wizard') { continue }
+        & $Node --check $WizardPath 2>$null
+        if ($LASTEXITCODE -ne 0) { continue }
         $Downloaded = $true
         break
     } catch {}

@@ -930,7 +930,7 @@ const PROBE_BASE = (process.env.ZEUS_PROBE_URL || '').replace(/\/+$/, '');
 
 function makeWorkerUrl(workerName, subdomain, path = '') {
   if (PROBE_BASE) return PROBE_BASE + (path ? (path.startsWith('/') ? path : '/' + path) : '');
-  const sub = (subdomain || '').replace(/^https?:\/\//i, '').replace(/\.workers\.dev$/i, '').replace(/^\.+|\.+$/g, '').trim();
+  const sub = (subdomain || '').replace(/^https?:\/\//i, '').replace(/\.?workers\.+dev$/i, '').replace(/^\.+|\.+$/g, '').trim();
   const host = `${workerName}${sub ? '.' + sub : ''}.workers.dev`.replace(/\.+/g, '.');
   return `https://${host}${path ? (path.startsWith('/') ? path : '/' + path) : ''}`;
 }

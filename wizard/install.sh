@@ -172,15 +172,28 @@ Options:
   NODE="$NODE_BIN"
 fi
 
-# ---- wizard script
+# ---- wizard script: first mirror to pass validation wins (a truncated download
+# must never reach node, or the user gets a cryptic SyntaxError instead of a retry)
 say "Downloading $WIZARD..."
 for SRC in $SOURCES; do
-  if fetch "$SRC" "$TMP" && [ -s "$TMP" ]; then
-    say "Starting the wizard (script kept in $INSTALL_DIR/$WIZARD for later runs)."
-    printf '\n'
-    cd "$INSTALL_DIR"
-    exec "$NODE" "$WIZARD" "$@"
+  fetch "$SRC" "$TMP" 2>/dev/null || continue
+  [ -s "$TMP" ] || continue
+  if [ "$(wc -c < "$TMP" | tr -d ' ')" -lt 51200 ]; then
+    say "  $SRC gave an unexpectedly small file, trying the next mirror"
+    continue
   fi
+  if ! grep -q 'Zeus Install Wizard' "$TMP"; then
+    say "  $SRC did not serve the wizard, trying the next mirror"
+    continue
+  fi
+  if ! "$NODE" --check "$TMP" 2>/dev/null; then
+    say "  $SRC served a broken download, trying the next mirror"
+    continue
+  fi
+  say "Starting the wizard (script kept in $INSTALL_DIR/$WIZARD for later runs)."
+  printf '\n'
+  cd "$INSTALL_DIR"
+  exec "$NODE" "$WIZARD" "$@"
 done
 
 fail 'Could not download wizard.mjs from any mirror. Check your connection (a VPN may help) and try again.'

@@ -894,6 +894,7 @@ Previously, `verifyDeployment` exited immediately upon seeing the very first 200
 3. **Verified live in real Cloudflare environment**: Fresh worker install (`t-fastheal-trfi`) detected 1101, executed the complete self-heal ladder, recreated the worker without touching D1, and concluded with a verified 200 OK panel response (`تعریف رمز عبور پـنـل`).
 4. All 215 offline tests pass (`215 PASS / 0 FAIL`).
 5. **URL Sanitization**: Introduced centralized `makeWorkerUrl` that cleans up any protocol prefix, trailing dots, or multiple consecutive dots (`.replace(/\.+/g, '.')`), ensuring valid `https://<worker>.<subdomain>.workers.dev` URLs everywhere without risk of malformed double dots.
+6. **Installer sync**: Re-synced root `install.ps1`/`install.sh` with `wizard/install.ps1`/`wizard/install.sh` byte-identically so one-command installers via raw URL always execute the hardened download validators.
 
 
 
