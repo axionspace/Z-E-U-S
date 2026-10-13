@@ -882,20 +882,17 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 
 ---
 
-## 2026-10-13 — Permanent elimination of initial 1101 via Bootstrap Pattern
+## 2026-10-13 — Restore active self-heal ladder & eliminate fake 200 exits
 
-### Root cause resolved
-When a fresh Worker script is uploaded for the first time without an active subdomain route, Cloudflare's Anycast edge isolates fail to bind cleanly when the route is added moments later, causing transient Error 1101.
-By contrast, updating an *already-routed* Worker is atomic and seamless in Cloudflare's deployment pipeline.
+### Why self-heal was not triggering on fresh installs
+On Cloudflare, a fresh Worker initially responds with 200 for the first ~4 seconds before Anycast edge synchronization transitions into the 1101 state around second 10–15.
+Previously, `verifyDeployment` exited immediately upon seeing the very first 200 check at second ~4, reporting a false success before edge desync happened, and leaving the self-heal ladder unreached.
 
 ### The Fix
-1. **Bootstrap Pattern**: For fresh Worker creations (`settings.status === 404`), `uploadWorker` now provisions the subdomain Anycast route with a lightweight placeholder module first, then immediately uploads the real Zeus panel script with D1 bindings as an atomic script update.
-2. `probeOnce` probes `/panel` directly instead of `/`.
-3. Edge stuck tolerance set to 3 consecutive checks in `verifyDeployment` to prevent false-alarm self-heals during edge DNS propagation.
-
-### Verification
-- Live real-world install on Cloudflare (`t-zero-28bv`) completed in 30.0s flat with ZERO 1101 errors and ZERO self-heal deletions needed.
-- All 215 offline flow tests pass (`215 PASS / 0 FAIL`).
+1. **Multi-round stability verification**: `verifyDeployment` now requires consecutive agreeing 200 checks before declaring success. If Cloudflare drops into 1101 during the warmup period, the loop breaks immediately and triggers the self-healing ladder.
+2. **Fast-fail retry in self-heal**: `waitForVerdict` breaks after 2 consecutive stuck checks (~8s) instead of idling 60s, quickly dropping through to the clean script recreation (DELETE + 404 poll + re-upload + subdomain enable).
+3. **Verified live in real Cloudflare environment**: Fresh worker install (`t-fastheal-trfi`) detected 1101, executed the complete self-heal ladder, recreated the worker without touching D1, and concluded with a verified 200 OK panel response (`تعریف رمز عبور پـنـل`).
+4. All 215 offline tests pass (`215 PASS / 0 FAIL`).
 
 
 

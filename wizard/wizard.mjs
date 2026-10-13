@@ -847,17 +847,6 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
     if (keep.length) ok('Preserving ' + keep.length + ' existing worker binding(s)');
   } else if (settings.status === 404) {
     console.log('     (no existing bindings to preserve)');
-    // Bootstrap: provision the subdomain Anycast route with a minimal placeholder first.
-    // Cloudflare edge nodes desync and throw Error 1101 when a brand-new Worker is given
-    // heavy bindings and a new route in the same moment. Pre-registering the route
-    // allows the real panel upload to arrive as a clean atomic version update:
-    if (!process.env.ZEUS_PROBE_URL) {
-      const bootForm = new FormData();
-      bootForm.append('metadata', new File([JSON.stringify({ main_module: 'worker.js', compatibility_date: compat, compatibility_flags: flags })], 'metadata.json', { type: 'application/json' }));
-      bootForm.append('worker.js', new File([Buffer.from('export default { fetch() { return new Response("init"); } };')], 'worker.js', { type: 'application/javascript+module' }));
-      await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'PUT', body: bootForm });
-      await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
-    }
   } else {
     warn('Could not read current worker settings (' + settings.errors + ') — uploading with the standard D1 binding.');
   }
@@ -1011,8 +1000,15 @@ async function waitForVerdict(base, waitMs, stepMs) {
   const deadline = Date.now() + waitMs;
   let probes = await probeAll(base);
   let verdict = classifyDeployment(probes);
+  let stuckCount = 0;
   while (verdict !== 'ok' && Date.now() < deadline) {
     if (verdict === 'binding' || verdict === 'integrity') break;
+    if (verdict === 'stuck') {
+      stuckCount++;
+      if (stuckCount >= 2) break;
+    } else {
+      stuckCount = 0;
+    }
     await new Promise((r) => setTimeout(r, stepMs));
     probes = await probeAll(base);
     verdict = classifyDeployment(probes);
@@ -1032,24 +1028,25 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const deadline = Date.now() + waitMs;
   let last = null;
   let attempt = 0;
-  let stuckRounds = 0;
+  let stableRounds = 0;
   for (;;) {
     attempt++;
     last = await probeOnce(base);
     const state = classifyProbe(last);
     if (state === 'ok') {
-      log.log('  ✅ Panel address answers ' + last.status + ' ✔');
-      return { ok: true, state: 'ok', healed: false, rebuilt: null };
+      stableRounds++;
+      // Verify stability over 2 consecutive agreeing reads so a transient early 200 cannot fake success:
+      if (stableRounds >= 2) {
+        log.log('  ✅ Panel address answers ' + last.status + ' ✔');
+        return { ok: true, state: 'ok', healed: false, rebuilt: null };
+      }
+    } else {
+      stableRounds = 0;
     }
     // Panel-side fatal errors trip immediately:
     if (last.text && (BINDING_MISSING_RE.test(last.text) || INTEGRITY_TRIP_RE.test(last.text))) break;
-    // Edge stuck or 1101: allow 3 consecutive checks to rule out transient routing warmup:
-    if (last.code === '1101' || state === 'stuck') {
-      stuckRounds++;
-      if (stuckRounds >= 3) break;
-    } else {
-      stuckRounds = 0;
-    }
+    // Edge stuck or 1101: break immediately to begin self-heal repair:
+    if (last.code === '1101' || state === 'stuck') break;
     if (Date.now() >= deadline) break;
     if (attempt % 2 === 1) {
       console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
