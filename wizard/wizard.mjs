@@ -1166,6 +1166,48 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   return { ok: false, state: again.state, healed: true, rebuilt: null };
 }
 
+// ------------------------------------------------------------------ first-install route priming
+// Why this exists (from the owner's live installs): on a brand-new worker name the script is
+// created FIRST and the workers.dev route is switched on AFTER it. Cloudflare then answered
+// "error code: 1101" on every route although the bytes were verified, and the same bytes only
+// ran once the script was created AGAIN while the route record already existed — which is
+// exactly the state the final-check self-heal ends in. Waiting longer never changed it (the
+// bad state is persistent), and a placeholder-first bootstrap did not either (the route was
+// still created after the script).
+// So for a worker name that did not exist before THIS run, the wizard now reaches that state
+// itself, before any public traffic: script → route on → script recreated → route on again.
+// It only ever removes the script this very run created seconds ago; the D1 database and
+// every row in it are never touched, and the final-check self-heal below stays exactly as is
+// (it still runs if Cloudflare answers 1101 anyway). ZEUS_NO_PREWARM=1 switches this off.
+async function primeFreshWorker({ accountId, workerName, buildPath, dbId, dbName }) {
+  if (process.env.ZEUS_NO_PREWARM === '1') return false;
+  const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 4000);
+  console.log('  💬 First install of this worker name — recreating the brand-new script once, now that its public route exists, before the first check.');
+  console.log('     (only the script this run just created is replaced; the database, its rows and the address are never touched)');
+  const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
+  if (!del.ok && !/10007/.test(String(del.errors))) {
+    warn('Could not recreate the new script (' + del.errors + ') — keeping the first upload; the final check will still self-heal if Cloudflare answers 1101.');
+    return false;
+  }
+  // Confirm the delete landed before creating the script again — racing the edge here
+  // would bring back the very state this step is meant to avoid.
+  for (let t = 0; t < 8; t++) {
+    const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+    if (!st.ok && st.status === 404) break;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
+  let en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
+  if (!en.ok) {
+    warn('Subdomain enable reported (' + en.errors + ') — waiting 10s and retrying once before giving up.');
+    await new Promise((r) => setTimeout(r, Number(process.env.ZEUS_SETTLE_MS || 10000)));
+    en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
+  }
+  if (!en.ok) { warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.'); return true; }
+  ok('Script recreated with its public route in place');
+  return true;
+}
+
 // ---------------------------------------------------------------- main
 async function main() {
   banner();
@@ -1359,6 +1401,8 @@ async function main() {
   }
   if (!en.ok) warn('Subdomain enable failed (' + en.errors + ') — you can enable it from the dashboard.');
   else ok('Enabled: ' + makeWorkerUrl(workerName, subdomain));
+  // Only for a name that did not exist before this run (never for an overwrite or a re-use).
+  if (fresh && !exists.known && en.ok) await primeFreshWorker({ accountId, workerName, buildPath: build.path, dbId, dbName });
   await settleDeploy(fresh);
 
   // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)

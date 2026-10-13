@@ -211,6 +211,9 @@ function startMock(opt = {}) {
 }
 
 // ------------------------------------------------------------------ run the wizard
+// The first-install route priming (a delete + recreate of the brand-new script) is switched
+// off for every older scenario so their "no DELETE" assertions keep their meaning; S24 turns it on.
+let RUN_ENV = { ZEUS_NO_PREWARM: '1' };
 function run(dir, port, args, answers) {
   return new Promise((res) => {
     const src = readFileSync(WIZARD_SRC, 'utf8');
@@ -231,6 +234,7 @@ function run(dir, port, args, answers) {
         ZEUS_PROBE_WAIT_MS: '3000',
         ZEUS_PROBE_INTERVAL_MS: '400',
         ZEUS_SETTLE_MS: '100',
+        ...RUN_ENV,
       },
     });
     let out = '';
@@ -734,6 +738,29 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S24 first-install route priming
+  console.log('• S24 a brand-new worker name is recreated once with its route in place, before the first check');
+  {
+    rmSync(profPath, { force: true });
+    RUN_ENV = {};
+    const { server, state, port } = await startMock({ probeMode: 'ok' });
+    const r = await run(root, port, [], [TOKEN, '', 'n']);
+    RUN_ENV = { ZEUS_NO_PREWARM: '1' };
+    check(!r.fatal && r.code === 0, 'S24 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
+    check(r.out.includes('First install of this worker name'), 'S24 announces the one-time recreation', r.out.slice(-2500));
+    check(state.deletes.length === 1 && /\/workers\/scripts\//.test(state.deletes[0]), 'S24 exactly one DELETE, on the worker script', JSON.stringify(state.deletes));
+    check(!state.deletes.some((d) => /d1\/database/.test(d)), 'S24 never deletes a database', JSON.stringify(state.deletes));
+    check(state.puts.length === 2 && sha(state.puts[0].bytes) === sha(state.puts[1].bytes), 'S24 two uploads of the identical personalised bytes', 'PUTs=' + state.puts.length);
+    const seq = state.requests.filter((q) => (q.method === 'PUT' || q.method === 'DELETE' || q.method === 'POST') && /workers\/scripts\//.test(q.path)).map((q) => q.method + (/subdomain/.test(q.path) ? ':subdomain' : ''));
+    check(seq.join(' ') === 'PUT POST:subdomain DELETE PUT POST:subdomain', 'S24 order is script → route on → recreate script → route on again', seq.join(' '));
+    check(!r.out.includes('Cloudflare itself answered "error code: 1101"'), 'S24 the final check never needed the self-heal');
+    check(r.out.includes('Install complete'), 'S24 completes the install');
+    const prof = readProf();
+    check(!!prof && !prof.healedAt, 'S24 the profile records no self-heal');
+    server.close();
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');
@@ -762,7 +789,7 @@ try {
     check(shTxt.includes('--check') && shTxt.includes('51200') && shTxt.includes('Zeus Install Wizard'), 'S8 install.sh validates the wizard download (size + marker + syntax) before running it');
     check(psTxt.includes('--check') && psTxt.includes('51200') && psTxt.includes('Zeus Install Wizard'), 'S8 install.ps1 validates the wizard download (size + marker + syntax) before running it');
     check(wizTxt.includes('canHeal: false') && (wizTxt.match(/canHeal/g) || []).length >= 3, 'S8 the self-heal is capped at one attempt (no recursion)');
-    check((wizTxt.match(/method: 'DELETE'/g) || []).length === 1, 'S8 exactly one DELETE exists in the wizard (the worker-script self-heal)', String((wizTxt.match(/method: 'DELETE'/g) || []).length));
+    check((wizTxt.match(/method: 'DELETE'/g) || []).length === 2, 'S8 exactly two DELETEs exist in the wizard (the final-check self-heal and the first-install route priming, both on the worker script only)', String((wizTxt.match(/method: 'DELETE'/g) || []).length));
     check(!/d1\/database\/[^`'"]*\\?`[^`]*method:\s*'DELETE'/.test(wizTxt) && !/d1\/database\/\$\{dbId\}`,\s*\{\s*method:\s*'DELETE'/.test(wizTxt), 'S8 no DELETE is ever issued against a database');
     // The published installer path (wizard/wizard.mjs) is the single canonical wizard file.
     check(existsSync(WIZARD_SRC), "S8 wizard/wizard.mjs exists and is the canonical installer script");  }

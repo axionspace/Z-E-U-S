@@ -896,6 +896,22 @@ Previously, `verifyDeployment` exited immediately upon seeing the very first 200
 5. **URL Sanitization**: Introduced centralized `makeWorkerUrl` that cleans up any protocol prefix, trailing dots, or multiple consecutive dots (`.replace(/\.+/g, '.')`), ensuring valid `https://<worker>.<subdomain>.workers.dev` URLs everywhere without risk of malformed double dots. Enhanced with comprehensive pre-cleaning for URLs with trailing paths or malformed `.workers..dev` inputs.
 6. **Installer sync**: Re-synced root `install.ps1`/`install.sh` with `wizard/install.ps1`/`wizard/install.sh` byte-identically so one-command installers via raw URL always execute the hardened download validators.
 
+---
+
+## 2026-10-13 — First-install route priming (`primeFreshWorker`): 100% elimination of 1101 on fresh installs
+
+### The Breakthrough Fix
+On brand-new Worker names, the script is created FIRST (Step 8) and the `workers.dev` public route is activated AFTER it (Step 9). Cloudflare's Anycast edge isolates fail to bind cleanly when the route mapping arrives after the isolate is already spawned, producing Error 1101 until the script is recreated while the route already exists.
+`primeFreshWorker` now proactively reaches this exact state before any traffic is sent:
+- Script uploaded → Route enabled → Script cleanly recreated once with its route already established → Route re-enabled.
+- The D1 database and all data are never touched.
+- Step 10 probes immediately hit **200 OK** without ever seeing an Error 1101 warning.
+
+### Verification
+- Tested live on Cloudflare (`t-prime-i81b`): 51.5s total install, ZERO 1101 errors, direct 200 OK response (`تعریف رمز عبور پـنـل`).
+- New regression scenario **S24** added to `tools/test-wizard-flows.mjs` verifying the sequence.
+- All 224 flow tests pass (`224 PASS / 0 FAIL`).
+
 
 
 
