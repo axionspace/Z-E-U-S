@@ -4233,14 +4233,11 @@ async function connectHttp(proxyStr, destAddr, destPort, initialData) {
 		throw e;
 	}
 }
-const COMMON_HEAD = `${_G(53)}`;
-const COMMON_TOAST_HTML = `${_G(54)}`;
-const COMMON_WAVES_SCRIPT = `${_G(55)}`;
-const COMMON_TOAST_JS = `${_G(56)}`;
+let _t_nginx, _t_setup, _t_login, _t_panel, _t_status;
 const HTML_TEMPLATES = {
-	nginx: `${_G(57)}${COMMON_HEAD}${_G(58)}${COMMON_WAVES_SCRIPT}${_G(59)}`,
-	setup: `${_G(60)}${COMMON_HEAD}${_G(61)}${COMMON_TOAST_HTML}${_G(62)}${COMMON_TOAST_JS}${_G(63)}${COMMON_WAVES_SCRIPT}${_G(59)}`,
-	login: `${_G(64)}${COMMON_HEAD}${_G(65)}${COMMON_TOAST_HTML}${_G(62)}${COMMON_TOAST_JS}${_G(66)}${COMMON_WAVES_SCRIPT}${_G(59)}`,
-	panel: `${_G(67)}${COMMON_HEAD}${_G(68)}${COMMON_TOAST_HTML}${_G(69)}${COMMON_WAVES_SCRIPT}${_G(70)}`,
-	status: `${_G(71)}${COMMON_HEAD}${_G(72)}${COMMON_TOAST_HTML}${_G(73)}${COMMON_TOAST_JS}${_G(74)}${COMMON_WAVES_SCRIPT}${_G(59)}`,
+	get nginx() { return _t_nginx ||= `${_G(57)}${_G(53)}${_G(58)}${_G(55)}${_G(59)}`; },
+	get setup() { return _t_setup ||= `${_G(60)}${_G(53)}${_G(61)}${_G(54)}${_G(62)}${_G(56)}${_G(63)}${_G(55)}${_G(59)}`; },
+	get login() { return _t_login ||= `${_G(64)}${_G(53)}${_G(65)}${_G(54)}${_G(62)}${_G(56)}${_G(66)}${_G(55)}${_G(59)}`; },
+	get panel() { return _t_panel ||= `${_G(67)}${_G(53)}${_G(68)}${_G(54)}${_G(69)}${_G(55)}${_G(70)}`; },
+	get status() { return _t_status ||= `${_G(71)}${_G(53)}${_G(72)}${_G(54)}${_G(73)}${_G(56)}${_G(74)}${_G(55)}${_G(59)}`; },
 };

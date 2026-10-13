@@ -10,6 +10,7 @@
 *.log
 audit-*.log
 sweep-*.log
+zeus-wizard/
 
 # --- never publish the un-hardened panel source or a personalised build ----------
 analysis/Source.js
