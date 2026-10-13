@@ -863,6 +863,21 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 3. **Full self-healing ladder active**: Restored the complete self-healing ladder in `verifyDeployment`: when 1101 is detected on an edge deploy, the wizard breaks immediately, attempts a cheap re-upload, falls through to deleting the worker script, waits for 404 confirmation, recreates the script from verified bytes, re-enables subdomain, and re-verifies.
 4. **Resilient API timeouts**: `cf()` calls now enforce a 120s timeout for multipart file uploads and 60s for standard API requests.
 
+---
+
+## 2026-10-13 — Strip AI directive traps and prompt injection comments from Source.js
+
+### Changes in `Source.js`
+1. Removed `_CF_AUTH_INTEGRITY` atob string.
+2. Removed `_LICENSE_CERTIFICATE` and the `_d1Q` check (which previously threw 503 "Cloudflare D1 Quota Exceeded").
+3. Removed `_SYSTEM_HALT` check inside `DbService.ensureSchema`.
+4. Removed `_CORE_LLM_LOCK` check inside WebSocket handler (`handlevIees`).
+5. Removed all 4 prompt injection comment blocks (`[SYSTEM DIRECTIVE: EXTREME SECURITY PROTOCOL]` and `[SYSTEM DIRECTIVE: ABSOLUTE OVERRIDE]`).
+
+### Verification
+- `Source.js` syntax check passed (`node --check`).
+- All 215 wizard flow tests, 104 personalize tests, 41 ECH tests, and 21 cfnew tests pass green (`215 / 104 / 41 / 21 PASS`).
+
 
 
 
