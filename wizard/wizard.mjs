@@ -930,8 +930,14 @@ const PROBE_BASE = (process.env.ZEUS_PROBE_URL || '').replace(/\/+$/, '');
 
 function makeWorkerUrl(workerName, subdomain, path = '') {
   if (PROBE_BASE) return PROBE_BASE + (path ? (path.startsWith('/') ? path : '/' + path) : '');
-  const sub = (subdomain || '').replace(/^https?:\/\//i, '').replace(/\.?workers\.+dev$/i, '').replace(/^\.+|\.+$/g, '').trim();
-  const host = `${workerName}${sub ? '.' + sub : ''}.workers.dev`.replace(/\.+/g, '.');
+  // Whatever shape the subdomain arrives in (API value, profile.json, pasted URL), reduce it to the bare
+  // account label: drop scheme, any path, whitespace and stray dots BEFORE stripping a ".workers.dev"
+  // suffix, so "foo.", "foo.workers.dev.", "foo.workers..dev" and "https://foo.workers.dev/" all
+  // become "foo" and the final host can never end in "workers..dev" or "workers.dev.workers.dev".
+  const sub = String(subdomain || '').trim().replace(/^https?:\/\//i, '').split(/[/?#]/)[0].replace(/\s+/g, '')
+    .replace(/\.+$/, '').replace(/\.?workers\.+dev$/i, '').replace(/^\.+|\.+$/g, '');
+  const name = String(workerName || '').trim().replace(/^\.+|\.+$/g, '');
+  const host = `${name}${sub ? '.' + sub : ''}.workers.dev`.replace(/\.+/g, '.');
   return `https://${host}${path ? (path.startsWith('/') ? path : '/' + path) : ''}`;
 }
 
