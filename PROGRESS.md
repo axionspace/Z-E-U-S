@@ -912,6 +912,17 @@ On brand-new Worker names, the script is created FIRST (Step 8) and the `workers
 - New regression scenario **S24** added to `tools/test-wizard-flows.mjs` verifying the sequence.
 - All 224 flow tests pass (`224 PASS / 0 FAIL`).
 
+---
 
+## 2026-10-14 — Terminal polish: Windows-console glyphs, spinners on every long wait, styled help/doctor
 
+Presentation only — no deploy, probe or self-heal logic changed (the plain, piped / `NO_COLOR` output is byte-identical to before).
 
+1. **Classic Windows consoles**: cmd.exe and the old PowerShell host cannot draw the arc corners, the ▰▱ bar or the braille spinner. They now get a CP437-safe set (`┌ └ █ ░ | / - \`); Windows Terminal, VS Code, Git Bash and every non-Windows terminal keep the full set.
+2. **Spinner on all long waits** (settings confirmation, read-back retries, address polling, delete confirmation, subdomain lookup) so the wizard never looks frozen. Off-terminal it is the same plain sleep as before.
+3. **`--help` and `--doctor` are styled** (cards, section headers, coloured verdict); `--token-link` prints the link in colour.
+4. **`--no-color`** (besides `NO_COLOR`) forces plain output even with `FORCE_COLOR=1`.
+5. **First-install priming is quiet**: the re-upload of the same bytes no longer repeats "Worker uploaded / settings confirmed / read-back matches" — one line says the script was recreated with its route in place. Warnings and failures inside that upload still print.
+6. Plain-mode "Install complete" / "Update complete" text restored to exactly the original layout; the help text now states the real settle defaults (10 s new worker, 5 s existing).
+
+Verification: `test-wizard-flows` 224 / 0, ECH 41 / 0, cfnew-wins 21 / 0. The spinner was exercised in a real pseudo-terminal (10 frames, countdown, line cleared), the classic-console glyph set and `--no-color` were run and checked, and the colour output was rendered to an image and inspected.

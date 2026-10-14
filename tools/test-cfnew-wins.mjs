@@ -8,14 +8,15 @@
 //   • ECH on ⇒ TLS-only port set (the shared rule in both outputs)
 //   • a bounded SOCKS5/direct attempt cannot stall the build (cfnew's 3.5 s downgrade rule,
 //     applied as an upper bound on the ECH lookup itself)
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { detectPrelude, xorDecode } from '../wizard/wizard.mjs';
 
-const build = readFileSync(new URL('../Source-hardened.js', import.meta.url), 'utf8');
+const buildUrl = existsSync(new URL('../Source.js', import.meta.url)) ? new URL('../Source.js', import.meta.url) : new URL('../Source-hardened.js', import.meta.url);
+const build = readFileSync(buildUrl, 'utf8');
 let pass = 0, fail = 0;
 const ok = (c, l, e) => { console.log((c ? 'PASS | ' : 'FAIL | ') + l + (e ? ' | ' + e : '')); c ? pass++ : fail++; };
 

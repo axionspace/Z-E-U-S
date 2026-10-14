@@ -23,7 +23,7 @@ import { detectPrelude, xorDecode, KW_RE, FORK_SOURCES, PERM_GROUPS, REQUIRED_CO
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT = resolve(__dirname, '..');
 const WIZARD_SRC = join(PROJECT, 'wizard', 'wizard.mjs');
-const SOURCE_FILE = join(PROJECT, 'Source-hardened.js');
+const SOURCE_FILE = existsSync(join(PROJECT, 'Source.js')) ? join(PROJECT, 'Source.js') : join(PROJECT, 'Source-hardened.js');
 const KEEP = process.argv.includes('--keep');
 
 const ACCOUNT_ID = 'c'.repeat(32);

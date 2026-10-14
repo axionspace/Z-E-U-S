@@ -91,7 +91,67 @@ let totalSteps = 10;
 // every step prints what it does and why, and every error ends with ONE concrete
 // next action.
 const line = '─'.repeat(58);
+
+// ---- Terminal styling. Colour, the progress bar, the spinner and the boxed cards only appear
+// on a real terminal; piped output, logs, CI and NO_COLOR keep the exact plain text they always
+// had, so nothing that reads the transcript changes. FORCE_COLOR=1 turns styling on for a pipe.
+const COLOR = !process.argv.includes('--no-color') && !process.env.NO_COLOR && process.env.TERM !== 'dumb' && (!!process.stdout.isTTY || process.env.FORCE_COLOR === '1');
+// Classic Windows consoles (cmd.exe, the old PowerShell host) lack the arc corners, the ▰▱ bar and the
+// braille spinner and show "?" boxes instead. Windows Terminal, VS Code, Git Bash and every non-Windows
+// terminal get the full set; the classic console gets glyphs from its own code page (CP437).
+const MODERN = process.platform !== 'win32' || !!(process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuANSI || /xterm|vt100|ansi|cygwin|screen/i.test(process.env.TERM || ''));
+const G = MODERN
+  ? { tl: '╭', bl: '╰', on: '▰', off: '▱', spin: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] }
+  : { tl: '┌', bl: '└', on: '█', off: '░', spin: ['|', '/', '-', '\\'] };
+const sgr = (on, off) => (s) => (COLOR ? `\x1b[${on}m${s}\x1b[${off}m` : String(s));
+const S = {
+  bold: sgr(1, 22), dim: sgr(2, 22), red: sgr(31, 39), green: sgr(32, 39), yellow: sgr(33, 39),
+  cyan: sgr(36, 39), gray: sgr(90, 39), brand: sgr('38;5;75', 39), under: sgr(4, 24),
+};
+const rule = () => (COLOR ? S.dim(line) : line);
+const T0 = Date.now();
+function elapsed(from = T0) {
+  const s = Math.max(0, Math.round((Date.now() - from) / 1000));
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+}
+function progressBar(n, total) {
+  return S.cyan(G.on.repeat(Math.min(n, total))) + S.dim(G.off.repeat(Math.max(0, total - n)));
+}
+// Open-right boxed cards (no right edge, so emoji width can never misalign anything).
+const cardTop = (title) => console.log('\n  ' + S.brand(G.tl + '─'.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand('─'.repeat(Math.max(2, 51 - title.length))));
+const cardRow = (text = '') => console.log('  ' + S.brand('│') + (text ? '  ' + text : ''));
+const cardSep = () => console.log('  ' + S.brand('├' + '─'.repeat(56)));
+const cardEnd = () => console.log('  ' + S.brand(G.bl + '─'.repeat(56)));
+// A wait that shows a spinner with the seconds left on a real terminal; a plain sleep elsewhere.
+async function pause(ms, label = '') {
+  if (!COLOR || !(ms > 0) || !process.stdout.isTTY) return new Promise((r) => setTimeout(r, ms));
+  const frames = G.spin;
+  const end = Date.now() + ms;
+  for (let i = 0; Date.now() < end; i++) {
+    const left = Math.ceil((end - Date.now()) / 1000);
+    process.stdout.write('\r\x1b[2K     ' + S.cyan(frames[i % frames.length]) + ' ' + S.dim(label + ' · ' + left + 's'));
+    await new Promise((r) => setTimeout(r, Math.max(1, Math.min(90, end - Date.now()))));
+  }
+  process.stdout.write('\r\x1b[2K');
+}
+const STEP_LIST = [
+  'Validate your Cloudflare API token', 'Pick the account to install into', 'Choose the worker name',
+  'Read your workers.dev subdomain', 'Create the D1 database, or reuse one', 'Fetch the hardened source',
+  'Give this install its own build fingerprint', 'Upload the worker and verify the bytes', 'Enable the public workers.dev address',
+  'Check the address, then optionally add a domain',
+];
+function bannerStyled() {
+  cardTop('⚡ ZEUS  ·  Install Wizard');
+  cardRow(S.dim('automated installer for the hardened panel'));
+  cardSep();
+  STEP_LIST.forEach((t, i) => cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + t));
+  cardSep();
+  cardRow(S.dim('Later on, ') + S.cyan('node wizard.mjs --update') + S.dim(' re-deploys with the saved defaults.'));
+  cardEnd();
+  console.log('     🔒 ' + S.dim('Your API token is never stored anywhere — not in a file, not in a log.'));
+}
 function banner() {
+  if (COLOR) return bannerStyled();
   console.log(`
 ${line}
     ⚡ Zeus Install Wizard — automated installer for the hardened panel
@@ -113,6 +173,22 @@ ${line}
 ${line}`);
 }
 function bannerUpdate(profile) {
+  if (COLOR) {
+    cardTop('⚡ ZEUS  ·  Manual update');
+    cardRow(S.dim('saved defaults — nothing is deleted, only the worker script is replaced'));
+    cardSep();
+    cardRow(S.dim('account  ') + (profile.accountName || profile.accountId));
+    cardRow(S.dim('worker   ') + profile.workerName);
+    cardRow(S.dim('database ') + (profile.dbName || '(none)') + (profile.dbId ? S.dim(' (' + String(profile.dbId).slice(0, 8) + '…)') : ''));
+    cardRow(S.dim('address  ') + S.cyan(profile.panelUrl || '(unknown)'));
+    cardRow(S.dim('identity ') + (profile.names ? Object.values(profile.names).slice(0, 2).join(', ') + ' …' : 'shared repository build'));
+    cardSep();
+    cardRow(S.dim('Your D1 database, its rows, the workers.dev address and any attached'));
+    cardRow(S.dim('domain stay exactly as they are. Only a Cloudflare 1101 may recreate'));
+    cardRow(S.dim('the worker script — never the database.'));
+    cardEnd();
+    return;
+  }
   console.log(`
 ${line}
     ⚡ Zeus Install Wizard — manual update (saved defaults)
@@ -151,7 +227,7 @@ function nextPiped() {
 // One question per screen: the prompt shows the question with its default inside
 // square brackets so it is always visible.
 async function ask(rl, q, def = '') {
-  const prompt = `  ${q}${def ? ` [${def}]` : ''}: `;
+  const prompt = `  ${S.bold(q)}${def ? S.dim(` [${def}]`) : ''}: `;
   if (pipedLines) {
     const a = nextPiped();
     if (a === null) {
@@ -256,17 +332,17 @@ async function askSecret(rl, q) {
 }
 
 function ok(msg) { console.log(`  ✅ ${msg}`); }
-function warn(msg) { console.log(`  ⚠️  ${msg}`); }
-function info(msg) { console.log(`     ${msg}`); }
+function warn(msg) { console.log(`  ⚠️  ${S.yellow(msg)}`); }
+function info(msg) { console.log(`     ${S.dim(msg)}`); }
 // Context line printed before every Cloudflare-touching step.
 function why(line) {
-  console.log('     ' + line);
+  console.log('     ' + S.dim(line));
 }
 let activeRl = null; // for a clean readline exit (avoids the Windows assert)
 // Every error ends with ONE concrete next action.
 function fail(msg, hint) {
-  console.error(`\n  ❌ ${msg}`);
-  if (hint) console.error(`     💡 Next step: ${hint}`);
+  console.error(`\n  ❌ ${S.red(S.bold(msg))}`);
+  if (hint) console.error(`     💡 Next step: ${S.cyan(hint)}`);
   process.exitCode = 1;
   restoreTty();
   try { process.stdin.pause(); } catch {}
@@ -275,6 +351,10 @@ function fail(msg, hint) {
 }
 function nextStep(title) {
   step++;
+  if (COLOR) {
+    console.log(`\n${rule()}\n  ${S.bold(S.cyan(`[${step}/${totalSteps}]`))}  ${progressBar(step, totalSteps)}  ${S.bold(title)}${S.dim('   ' + elapsed())}\n${rule()}`);
+    return;
+  }
   console.log(`\n${line}\n  [${step}/${totalSteps}]  ${title}\n${line}`);
 }
 
@@ -775,7 +855,7 @@ async function settleDeploy(fresh) {
   const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : ms;
   if (!(wait > 0)) return;
   console.log('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
-  await new Promise((r) => setTimeout(r, wait));
+  await pause(wait, 'Letting the route attach');
 }
 
 // Occasionally a freshly created worker on an account starts answering error 1101 on
@@ -830,7 +910,10 @@ async function deployedBytes(accountId, name) {
 // panel's own requirements (REQUIRED_COMPAT_DATE / REQUIRED_COMPAT_FLAGS): an existing
 // newer date is kept, an older one is upgraded, flags are unioned and never dropped —
 // silently downgrading either is a known way to turn a healthy panel into error 1101.
-async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
+async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName, opts = {}) {
+  // quiet: success / progress lines are skipped (warnings and failures always print)
+  const qok = (m) => { if (!opts.quiet) ok(m); };
+  const qlog = (m) => { if (!opts.quiet) console.log(m); };
   const bytes = readFileSync(scriptPath);
   let bindings = [{ type: 'd1', name: 'DB', id: dbId }];
   let compat = REQUIRED_COMPAT_DATE;
@@ -841,12 +924,12 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
     bindings = keep.concat([{ type: 'd1', name: 'DB', id: dbId }]);
     const prevDate = settings.data.result.compatibility_date;
     if (prevDate && prevDate > compat) compat = prevDate;
-    else if (prevDate && prevDate < compat) console.log('     (compatibility date upgraded ' + prevDate + ' → ' + compat + ' to match what the panel ships with)');
+    else if (prevDate && prevDate < compat) qlog('     (compatibility date upgraded ' + prevDate + ' → ' + compat + ' to match what the panel ships with)');
     const prevFlags = settings.data.result.compatibility_flags;
     if (Array.isArray(prevFlags)) flags = [...new Set([...prevFlags, ...REQUIRED_COMPAT_FLAGS])];
-    if (keep.length) ok('Preserving ' + keep.length + ' existing worker binding(s)');
+    if (keep.length) qok('Preserving ' + keep.length + ' existing worker binding(s)');
   } else if (settings.status === 404) {
-    console.log('     (no existing bindings to preserve)');
+    qlog('     (no existing bindings to preserve)');
   } else {
     warn('Could not read current worker settings (' + settings.errors + ') — uploading with the standard D1 binding.');
   }
@@ -859,7 +942,7 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
   };
   let up = await putOnce();
   if (!up.ok) fail('Worker upload failed (' + up.errors + ')', up.status === 413 ? 'Script is too large — build a different source version.' : 'Check Workers Scripts/Edit access in the token.');
-  ok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ' ' + flags.join('+') + ')');
+  qok('Worker uploaded (' + (bytes.length / 1024).toFixed(0) + 'KB, D1: ' + (dbName || 'DB') + ', compat ' + compat + ' ' + flags.join('+') + ')');
   // Settings are eventually consistent after a PUT: poll until the API reports back the
   // bindings, date and flags that were just sent — twice in a row, so a single flapping
   // read can't fake a confirmation. Deploying blind here used to leave workers behind
@@ -885,7 +968,7 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
         stable = 0;
         if (st.ok) seenMismatch = true;
       }
-      await new Promise((r) => setTimeout(r, pollMs));
+      await pause(pollMs, 'Confirming the worker settings');
     }
     return { settled: null, seenMismatch, last };
   };
@@ -896,20 +979,20 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName) {
     if (!up.ok) fail('Worker upload failed (' + up.errors + ')', 'Check Workers Scripts/Edit access in the token.');
     ({ settled } = await awaitStableSettings(8));
     if (!settled) warn('Could not confirm the worker settings yet — continuing; the read-back check below still proves the bytes.');
-    else ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
+    else qok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
   } else if (settled) {
-    ok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
+    qok('Worker settings confirmed: D1 binding + compat ' + settled.compatibility_date + ' ' + (settled.compatibility_flags || []).join('+'));
   } else {
     warn('Could not confirm the worker settings yet — continuing; the read-back check below still proves the bytes.');
   }
   let back = await deployedBytes(accountId, workerName);
   for (let t = 0; !back.ok && t < 3; t++) {
-    await new Promise((r) => setTimeout(r, 4000));
+    await pause(4000, 'Reading the deployed script back');
     back = await deployedBytes(accountId, workerName);
   }
   if (back.ok && back.bytes) {
     const a = sha256hex(back.bytes), b = sha256hex(bytes);
-    if (a === b) ok('Read-back matches: the deployed script is byte-identical to this build (' + back.bytes.length + 'B, sha256 ' + a.slice(0, 12) + '…)');
+    if (a === b) qok('Read-back matches: the deployed script is byte-identical to this build (' + back.bytes.length + 'B, sha256 ' + a.slice(0, 12) + '…)');
     else warn('Read-back differs from the local build (deployed ' + a.slice(0, 12) + ' vs local ' + b.slice(0, 12) + ') — re-run the update.');
   } else {
     warn('Could not read the deployed script back for comparison (' + (back.errors || 'HTTP ' + back.status) + ').');
@@ -1021,7 +1104,7 @@ async function waitForVerdict(base, waitMs, stepMs) {
     } else {
       stuckCount = 0;
     }
-    await new Promise((r) => setTimeout(r, stepMs));
+    await pause(stepMs, 'Checking the address again');
     probes = await probeAll(base);
     verdict = classifyDeployment(probes);
   }
@@ -1063,7 +1146,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     if (attempt % 2 === 1) {
       console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
     }
-    await new Promise((r) => setTimeout(r, stepMs));
+    await pause(stepMs, 'Waiting for the address to answer');
   }
   // One slow, careful pass over every route before deciding anything.
   const first = await probeAll(base);
@@ -1150,7 +1233,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   for (let t = 0; t < 8; t++) {
     const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
     if (!st.ok && st.status === 404) break;
-    await new Promise((r) => setTimeout(r, stepMs));
+    await pause(stepMs, 'Waiting for the delete to land');
   }
   await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
   const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
@@ -1194,9 +1277,9 @@ async function primeFreshWorker({ accountId, workerName, buildPath, dbId, dbName
   for (let t = 0; t < 8; t++) {
     const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
     if (!st.ok && st.status === 404) break;
-    await new Promise((r) => setTimeout(r, stepMs));
+    await pause(stepMs, 'Waiting for the delete to land');
   }
-  await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
+  await uploadWorker(accountId, workerName, buildPath, dbId, dbName, { quiet: true });
   let en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
   if (!en.ok) {
     warn('Subdomain enable reported (' + en.errors + ') — waiting 10s and retrying once before giving up.');
@@ -1295,7 +1378,7 @@ async function main() {
       subdomain = sub.data.result.subdomain;
       break;
     }
-    if (t < 2) await new Promise((r) => setTimeout(r, 2000));
+    if (t < 2) await pause(2000, 'Reading your workers.dev subdomain');
   }
   if (subdomain) {
     ok('Final address will be: ' + makeWorkerUrl(workerName, subdomain));
@@ -1424,7 +1507,29 @@ async function main() {
     console.log('  worker script once with the identical verified bytes. The database was never touched.');
   }
 
-  console.log(`
+  if (COLOR) {
+    cardTop('🎉 Install complete  ·  ' + elapsed() + ' total');
+    cardRow();
+    cardRow(S.bold('📍 Panel address') + S.dim('  (open it first and set the admin password)'));
+    cardRow('   ' + S.cyan(S.under(panelUrl)));
+    cardRow();
+    cardRow(S.bold('🔗 User subscription pattern'));
+    cardRow('   ' + S.cyan(makeWorkerUrl(workerName, subdomain, '/sub/<username>')));
+    cardRow();
+    cardRow(S.yellow('⚠️  First thing to do: ') + 'open the panel address and set the admin password.');
+    cardRow(S.dim('   Until a password exists the panel answers its own API without one —'));
+    cardRow(S.dim('   that is the author\'s first-run design, so never leave a fresh install unclaimed.'));
+    cardSep();
+    cardRow(S.bold('Good to know'));
+    cardRow(S.cyan('1') + '  This deployment has its own build identity' + (build.names ? S.dim(' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)') : ''));
+    cardRow('   ' + S.dim('— it is not byte-identical to anybody else\'s install of the panel.'));
+    cardRow(S.cyan('2') + '  The in-panel "Update panel" button replaces this build with the author\'s;');
+    cardRow('   ' + S.dim('restore yours with ') + S.cyan('node wizard.mjs --update'));
+    cardRow(S.cyan('3') + '  Inside Iran, finish the custom-domain step (you can do it right now).');
+    cardRow(S.cyan('4') + '  Keep your API token private; this wizard never stores it.');
+    cardEnd();
+  } else {
+    console.log(`
 ${line}
   🎉 Install complete!
 
@@ -1447,6 +1552,7 @@ ${line}
          right now).
       4. Keep your API token private; this wizard never stores it.
 ${line}`);
+  }
 
   // ---------- optional custom domain
   const wantDomain = await ask(rl, 'Do you have a custom domain you want to attach? (y/n)', 'n');
@@ -1632,13 +1738,25 @@ async function updateMain() {
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : makeWorkerUrl(workerName, subdomain, '/panel');
   const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain, srcPath: src.path, seed });
-  console.log(`
+  if (COLOR) {
+    cardTop('🔄 Update complete  ·  ' + elapsed() + ' total');
+    cardRow();
+    cardRow(S.dim('same database, same address, freshly rebuilt bytes'));
+    cardRow('   ' + S.cyan(S.under(url)));
+    cardRow('   ' + (health.ok ? S.green('responding now ✔') : S.yellow('not answered from this machine yet') + S.dim(' (a filtered network or route propagation;')));
+    if (!health.ok) cardRow('   ' + S.dim(' the deploy itself was verified byte for byte)'));
+    cardRow();
+    cardRow(build.names ? S.dim('build identity kept: ') + Object.values(build.names).slice(0, 2).join(', ') + ' …' : S.dim('shared repository build deployed'));
+    cardEnd();
+  } else {
+    console.log(`
 ${line}
   🔄 Update complete — same database, same address, freshly rebuilt bytes:
         ${url}
         ${health.ok ? 'responding now ✔' : 'not answered from this machine yet (a filtered network or route propagation; the deploy itself was verified byte for byte)'}
       ${build.names ? 'Build identity kept for this panel: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
 ${line}`);
+  }
   const finalSeed = (health.rebuilt && health.rebuilt.seed) || seed || profile.seed;
   const finalNames = (health.rebuilt && health.rebuilt.names) || build.names || null;
   const finalRows = (health.rebuilt && health.rebuilt.rows) || build.rows || 0;
@@ -1724,6 +1842,7 @@ ${line}
       node wizard.mjs --token-link    only print the token-creation link
       node wizard.mjs --rotate        mint a brand-new build identity
       node wizard.mjs --no-fingerprint  deploy the shared repository build unchanged
+      node wizard.mjs --no-color      plain output: no colours, boxes or spinners (NO_COLOR works too)
       node wizard.mjs --help          this help
       node wizard.mjs --doctor        diagnose a deployed worker (read-only)
 
@@ -1731,10 +1850,38 @@ ${line}
       ZEUS_CF_TOKEN       read the API token from the env instead of typing it
       ZEUS_PROBE_WAIT_MS  how long the final address check waits for propagation (default 90000)
       ZEUS_PROBE_URL      custom address for the final health check (used by tests)
-      ZEUS_SETTLE_MS      calm wait between verified upload and address switch-on (default 12000)
+      ZEUS_SETTLE_MS      calm wait between verified upload and the first check (default 10000 for a new worker, 5000 otherwise)
 
     Safety: your token is never stored or printed — it always shows as ••••••••.
 ${line}`;
+}
+
+function helpStyled() {
+  const cmd = (c, d) => cardRow(S.cyan(c.padEnd(32)) + S.dim(d));
+  cardTop('⚡ ZEUS  ·  Install Wizard  ·  help');
+  cardRow(S.bold('Usage') + S.dim('   node wizard.mjs [option]'));
+  cardSep();
+  cmd('(no option)', 'full interactive install');
+  cmd('--update', 'update with the saved defaults');
+  cmd('--doctor [worker]', 'diagnose a deployed worker (read-only)');
+  cmd('--token-link', 'only print the token-creation link');
+  cmd('--rotate', 'mint a brand-new build identity');
+  cmd('--no-fingerprint', 'deploy the shared repository build unchanged');
+  cmd('--prepare-only', 'validate the source only, no Cloudflare calls');
+  cmd('--personalize', 'build a private copy, no Cloudflare calls');
+  cmd('--no-color', 'plain output (NO_COLOR works too)');
+  cmd('--help', 'this help');
+  cardSep();
+  cardRow(S.bold('Environment'));
+  cmd('ZEUS_CF_TOKEN', 'read the API token from the env instead of typing it');
+  cmd('ZEUS_PROBE_WAIT_MS', 'how long the final check waits (default 90000)');
+  cmd('ZEUS_PROBE_URL', 'custom address for the final check (tests)');
+  cmd('ZEUS_SETTLE_MS', 'calm wait before the first check (10s new, 5s existing)');
+  cmd('ZEUS_NO_PREWARM=1', 'skip the first-install route priming');
+  cmd('FORCE_COLOR=1', 'keep colours even when piped');
+  cardSep();
+  cardRow('🔒 ' + S.dim('Your token is never stored or printed — it always shows as ••••••••.'));
+  cardEnd();
 }
 
 // ---------------------------------------------------------------- doctor
@@ -1749,7 +1896,12 @@ async function doctorMain() {
   const profile = loadProfile() || {};
   const argWorker = process.argv[process.argv.indexOf('--doctor') + 1];
   const defWorker = (argWorker && !argWorker.startsWith('--')) ? argWorker : (profile.workerName || '');
-  console.log('Doctor mode: read-only diagnosis, nothing is changed or deleted\n');
+  if (COLOR) {
+    cardTop('🩺 ZEUS  ·  Doctor');
+    cardRow(S.dim('read-only diagnosis — nothing is changed or deleted'));
+    cardEnd();
+    console.log('');
+  } else console.log('Doctor mode: read-only diagnosis, nothing is changed or deleted\n');
   const envTok = tokenFromEnv();
   if (envTok) {
     TOKEN = envTok;
@@ -1769,7 +1921,7 @@ async function doctorMain() {
   }
   const workerName = (await ask(rl, 'Worker name', defWorker)).trim();
   if (!workerName) fail('No worker name given.', 'Run again as: node wizard.mjs --doctor <worker-name>.');
-  console.log('\n  --- worker settings ---');
+  console.log('\n  ' + (COLOR ? S.bold(S.cyan('worker settings')) + S.dim('  ' + '─'.repeat(40)) : '--- worker settings ---'));
   const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
   if (!st.ok) fail('Could not read the worker settings (' + (st.errors || ('HTTP ' + st.status)) + ').', 'Check the worker name and that the token lists this account.');
   const res = st.data.result || {};
@@ -1781,13 +1933,13 @@ async function doctorMain() {
   console.log('  D1 binding         : ' + (d1 ? ('DB -> ' + String(d1.id || d1.database_id || '').slice(0, 8) + '…  ✅') : 'NONE  ❌ the panel cannot work without it'));
   if (profile.dbId && d1 && (d1.id || d1.database_id) !== profile.dbId) warn('The binding points at a different database than the saved profile (' + String(profile.dbId).slice(0, 8) + '…).');
   if (d1 && (d1.id || d1.database_id)) {
-    console.log('\n  --- D1 database ---');
+    console.log('\n  ' + (COLOR ? S.bold(S.cyan('D1 database')) + S.dim('  ' + '─'.repeat(40)) : '--- D1 database ---'));
     const dl = await cf(`/accounts/${accountId}/d1/database/${d1.id || d1.database_id}`);
     console.log('  database           : ' + (dl.ok ? dl.data.result.name + '  ✅' : 'LOOKUP FAILED ' + (dl.errors || dl.status)));
     const census = await d1Snapshot(accountId, d1.id || d1.database_id);
     console.log('  tables             : ' + (census ? Object.entries(census).map(([k, v]) => k + '=' + v).join(', ') + '  ✅' : 'query failed (token needs D1 query access)'));
   }
-  console.log('\n  --- deployed bytes ---');
+  console.log('\n  ' + (COLOR ? S.bold(S.cyan('deployed bytes')) + S.dim('  ' + '─'.repeat(40)) : '--- deployed bytes ---'));
   const back = await deployedBytes(accountId, workerName);
   if (!back.ok || !back.bytes) {
     console.log('  Could not read the deployed script (' + (back.errors || ('HTTP ' + back.status)) + ').');
@@ -1798,7 +1950,7 @@ async function doctorMain() {
     console.log('  module export      : ' + (/export\s+default/.test(txt) ? 'present  ✅' : 'MISSING  ❌ the upload is damaged — re-run the installer'));
     console.log('  payload table      : ' + (det ? det.blobs.length + ' rows, decoder ' + det.getName + '  ✅' : 'NOT FOUND  ❌ the upload is damaged — re-run the installer'));
   }
-  console.log('\n  --- routes ---');
+  console.log('\n  ' + (COLOR ? S.bold(S.cyan('routes')) + S.dim('  ' + '─'.repeat(40)) : '--- routes ---'));
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const probes = await probeAll(probeBase(workerName, subdomain));
@@ -1807,7 +1959,7 @@ async function doctorMain() {
     console.log('  ' + p.path.padEnd(20) + String(p.status).padEnd(6) + mark);
   }
   const verdict = classifyDeployment(probes);
-  console.log('\n  verdict: ' + verdict);
+  console.log('\n  verdict: ' + (COLOR ? (verdict === 'ok' ? S.green(S.bold(verdict)) : S.yellow(S.bold(verdict))) : verdict));
   if (verdict !== 'ok') console.log('  Probed at (UTC): ' + new Date().toISOString() + ' — dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs around this time shows the exact exception.');
   if (verdict === 'ok') console.log('  ✅ The panel answers every route — nothing to fix. If a browser still shows an error, hard-refresh (Ctrl+Shift+R) or check your VPN.');
   else if (verdict === 'binding') console.log('  Next step: run `node wizard.mjs --update` and accept the saved database — the wizard re-attaches the D1 binding without deleting anything.');
@@ -1820,12 +1972,12 @@ async function doctorMain() {
 if (looksImported()) {
   // module import: helpers only, no prompts, no network
 } else if (process.argv.includes('--help') || process.argv.includes('-h')) {
-  console.log(helpText());
+  if (COLOR) helpStyled(); else console.log(helpText());
 } else if (process.argv.includes('--doctor')) {
   doctorMain().catch(onUnhandled);
 } else if (process.argv.includes('--token-link')) {
   console.log('\n  Cloudflare API token-creation link (permissions pre-set + random name):\n');
-  console.log('  ' + makeTokenUrl());
+  console.log('  ' + S.cyan(makeTokenUrl()));
   console.log('\n  Open it in a browser → Continue to summary → Create Token → copy the token.');
   console.log('  Paste the token only into the wizard — it is never written to a file or a log.\n');
 } else if (process.argv.includes('--update')) {
