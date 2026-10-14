@@ -267,6 +267,24 @@ function restoreTty() {
   // exit paths (fail(), final cleanup), which pause explicitly themselves.
   try { if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false); } catch {}
 }
+
+function tokenGuide(url) {
+  if (!COLOR) {
+    console.log('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
+    console.log(`     ${url}`);
+    console.log('  (Continue to summary → Create Token → copy the created token and paste it here)');
+    console.log('  🔒 Nothing you type is echoed; only a fixed mask with the character count is shown.');
+    return;
+  }
+  cardTop('🔑 Cloudflare API token');
+  cardRow(S.cyan('1') + '  Open the link below  ' + S.dim('(permissions pre-set, random name)'));
+  cardRow(S.cyan('2') + '  Continue to summary → Create Token → copy the token');
+  cardRow(S.cyan('3') + '  Paste it at the prompt and press Enter');
+  cardEnd();
+  console.log('\n     ' + S.cyan(S.under(url)) + '\n');
+  console.log('     🔒 ' + S.dim('Typing is hidden — only a mask and the character count are shown.') + '\n');
+}
+
 async function askSecret(rl, q) {
   const label = 'Paste your Cloudflare API token here and press Enter';
   if (pipedLines) {
@@ -294,17 +312,20 @@ async function askSecret(rl, q) {
 
   return new Promise((resolve) => {
     const stdin = process.stdin;
-    const prompt = '  ' + label + '\n    ' + q + ': ';
+    const head = '  ' + S.bold('🔑 Token') + S.dim(' ›') + ' ';
     let value = '';
-    const paint = () => {
-      const dots = '•'.repeat(value.length ? 8 : 0);
-      const txt = value.length ? dots + '   (received, ' + value.length + ' chars)'
-        : '(typing is hidden — paste the token and press Enter)';
-      // Erase the whole physical line first: this wipes any characters the console
-      // echoed itself (raw mode does not suppress echo on every Windows setup).
+    let done = false;
+
+    const wipe = () => {
       try { clearLine(process.stdout, 0); cursorTo(process.stdout, 0); }
       catch { process.stdout.write('\r'); }
-      process.stdout.write(txt);
+    };
+    const render = () => {
+      const body = value.length
+        ? S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars')
+        : S.dim('paste your token here');
+      wipe();
+      process.stdout.write(head + body);
     };
     const cleanup = () => {
       stdin.removeListener('keypress', onKey);
@@ -312,16 +333,26 @@ async function askSecret(rl, q) {
       restoreTty();
     };
     const onExit = () => restoreTty();
-    const onKey = (str, key) => {
-      // The last keypress already repainted the line, so Enter only drops the final
-      // mask line — no redundant repaint (keeps transcripts to one mask per burst).
-      if (key && key.name === 'return') { cleanup(); process.stdout.write('\n  ' + maskSecret(value.trim()) + '\n'); resolve(value.trim()); return; }
-      // Ctrl+C must always work, even while the terminal is in raw mode
-      if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
-      if (key && key.name === 'backspace') { if (value.length) value = value.slice(0, -1); paint(); return; }
-      if (str && !(key && key.ctrl)) { value += str; paint(); }
+    const submit = () => {
+      if (done) return;
+      const v = value.trim();
+      if (!v) { render(); return; }           // Enter on empty input is ignored
+      done = true;
+      cleanup();
+      wipe();                                  // replace the mask line, never add another
+      process.stdout.write('  ✅ ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n');
+      resolve(v);
     };
-    process.stdout.write(prompt);
+    const onKey = (str, key) => {
+      if (done) return;
+      if (key && (key.name === 'return' || key.name === 'enter')) { submit(); return; }
+      if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
+      if (key && key.name === 'backspace') { value = value.slice(0, -1); render(); return; }
+      if (str && /^[\x21-\x7e]+$/.test(str) && !(key && (key.ctrl || key.meta))) { value += str; render(); }
+    };
+
+    process.stdout.write('\n');
+    render();
     stdin.setEncoding('utf8');
     emitKeypressEvents(stdin);
     stdin.on('keypress', onKey);
@@ -1320,10 +1351,7 @@ async function main() {
   nextStep('Validate API token');
   why('It prints a pre-filled token-creation link, then takes your token and verifies it.');
   const tokenUrl = makeTokenUrl();
-  console.log('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
-  console.log(`     ${tokenUrl}`);
-  console.log('  (Continue to summary → Create Token → copy the created token and paste it here)');
-  console.log('  🔒 Nothing you type is echoed; only a fixed mask with the character count is shown.');
+  tokenGuide(tokenUrl);
   const envTok = tokenFromEnv();
   if (envTok) {
     TOKEN = envTok;

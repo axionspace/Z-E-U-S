@@ -924,5 +924,6 @@ Presentation only — no deploy, probe or self-heal logic changed (the plain, pi
 4. **`--no-color`** (besides `NO_COLOR`) forces plain output even with `FORCE_COLOR=1`.
 5. **First-install priming is quiet**: the re-upload of the same bytes no longer repeats "Worker uploaded / settings confirmed / read-back matches" — one line says the script was recreated with its route in place. Warnings and failures inside that upload still print.
 6. Plain-mode "Install complete" / "Update complete" text restored to exactly the original layout; the help text now states the real settle defaults (10 s new worker, 5 s existing).
+7. **Clean token prompt lifecycle**: added `tokenGuide(url)` card above prompt; Enter on empty input is safely ignored; line wiping replaces the live mask with confirmation (`Token received · XX chars`) instead of printing duplicate mask lines; `\r\n` paste sequences are handled cleanly without trailing artifact lines.
 
 Verification: `test-wizard-flows` 224 / 0, ECH 41 / 0, cfnew-wins 21 / 0. The spinner was exercised in a real pseudo-terminal (10 frames, countdown, line cleared), the classic-console glyph set and `--no-color` were run and checked, and the colour output was rendered to an image and inspected.
