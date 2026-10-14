@@ -1439,7 +1439,7 @@ async function main() {
 
   // ---------- [3/10] worker name
   nextStep('Worker name');
-  const suggestedName = randName(6);
+  const suggestedName = randName(8);
   console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
   const workerName = (await ask(rl, 'Worker name', suggestedName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the suggested random name.');
