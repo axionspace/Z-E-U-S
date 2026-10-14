@@ -326,25 +326,33 @@ async function askSecret(rl, q) {
       try { if (process.stdout.isTTY) process.stdout.write(show ? '\x1b[?25h' : '\x1b[?25l'); } catch {}
     };
 
-    const wipe = () => {
-      try { clearLine(process.stdout, 0); cursorTo(process.stdout, 0); }
-      catch { process.stdout.write('\r'); }
-    };
-    // Empty input: draw the dim hint, then pull the caret back to the START of it, so it
-    // behaves like a real placeholder (the caret blinks before the hint, and the hint
-    // disappears as soon as the first character arrives). Otherwise: the fixed mask.
-    const render = () => {
-      wipe();
+    // ONE write per redraw. The caret is hidden first, the line is erased and redrawn, and the
+    // caret comes back (only while the field is empty, in front of the hint) at the very end of
+    // that same write — so no intermediate state is ever painted: no caret jumping to the start
+    // of the line, no half-drawn line, no flicker.
+    const HIDE = '\x1b[?25l', SHOW = '\x1b[?25h', ERASE = '\r\x1b[2K';
+    let lastFrame = '';
+    let pending = false;
+    const frame = () => {
       if (value.length) {
-        // something was typed: only the mask is shown and the caret is hidden completely
-        setCaret(false);
-        process.stdout.write(head + S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars') + (warned ? '   ' + S.yellow('! ' + LANG_WARN) : ''));
-      } else {
-        setCaret(true);
-        const txt = warned ? LANG_WARN : hint;
-        process.stdout.write(head + (warned ? S.yellow(txt) : S.dim(txt)));
-        try { moveCursor(process.stdout, -txt.length, 0); } catch {}
+        // something was typed: only the mask is shown and the caret stays hidden
+        return HIDE + ERASE + head + S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars') + (warned ? '   ' + S.yellow('! ' + LANG_WARN) : '');
       }
+      // empty: dim hint with the caret pulled back to the START of it (a real placeholder)
+      const txt = warned ? LANG_WARN : hint;
+      return HIDE + ERASE + head + (warned ? S.yellow(txt) : S.dim(txt)) + '\x1b[' + txt.length + 'D' + SHOW;
+    };
+    const render = () => {
+      const f = frame();
+      if (f === lastFrame) return;            // nothing changed — never repaint
+      lastFrame = f;
+      try { process.stdout.write(f); } catch {}
+    };
+    // A paste arrives as many key events in the same tick: draw once, after the last one.
+    const scheduleRender = () => {
+      if (pending) return;
+      pending = true;
+      queueMicrotask(() => { pending = false; if (!done) render(); });
     };
     const onExit = () => { setCaret(true); restoreTty(); };
     const cleanup = () => {
@@ -357,10 +365,11 @@ async function askSecret(rl, q) {
       if (done) return;
       const v = value.trim();
       if (!v) { render(); return; }           // Enter on empty input is ignored
+      if (pending) { pending = false; render(); }
       done = true;
+      // replace the mask line with the confirmation in one write — never add a second line
+      try { process.stdout.write(HIDE + ERASE + '  ✅ ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n' + SHOW); } catch {}
       cleanup();
-      wipe();                                  // replace the mask line — never add a second one
-      process.stdout.write('  ✅ ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n');
       resolve(v);
     };
     const onKey = (str, key) => {
@@ -368,7 +377,7 @@ async function askSecret(rl, q) {
       if (key && (key.name === 'return' || key.name === 'enter')) { submit(); return; }
       // Ctrl+C must always work, even while the terminal is in raw mode
       if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
-      if (key && key.name === 'backspace') { value = value.slice(0, -1); warned = false; render(); return; }
+      if (key && key.name === 'backspace') { value = value.slice(0, -1); warned = false; scheduleRender(); return; }
       if (str && !(key && (key.ctrl || key.meta))) {
         // An API token is plain ASCII. Persian / Arabic / any other non-ASCII letter (typed with
         // the wrong keyboard layout, or pasted) is never added and never drawn — the field stays
@@ -382,7 +391,7 @@ async function askSecret(rl, q) {
         }
         if (bad) warned = true;
         else if (added) warned = false;
-        if (added || bad) render();
+        if (added || bad) scheduleRender();
       }
     };
 
