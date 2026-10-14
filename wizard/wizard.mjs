@@ -320,6 +320,14 @@ async function askSecret(rl, q) {
     let done = false;
     let warned = false;
     const LANG_WARN = 'switch keyboard to English (Alt+Shift)';
+
+    // Mute readline's output during secret input: readline.createInterface maintains its own
+    // keypress listener on stdin and echoes typed characters to its output stream by default.
+    // Muting rl.output completely silences that internal echo, preventing characters from flashing.
+    const origOutput = rl ? rl.output : null;
+    const muted = new Writable({ write(_chunk, _enc, cb) { cb(); } });
+    if (rl) rl.output = muted;
+
     // The blinking caret is shown only while the field is empty (in front of the hint) and
     // is hidden as soon as the mask appears. It is ALWAYS restored on every exit path.
     const setCaret = (show) => {
@@ -346,12 +354,21 @@ async function askSecret(rl, q) {
       }
     };
 
-    const onExit = () => { setCaret(true); restoreTty(); };
+    const onExit = () => {
+      setCaret(true);
+      restoreTty();
+      if (rl && origOutput) rl.output = origOutput;
+    };
     const cleanup = () => {
       stdin.removeListener('keypress', onKey);
       process.removeListener('exit', onExit);
       setCaret(true);
       restoreTty();
+      if (rl) {
+        if (origOutput) rl.output = origOutput;
+        rl.line = '';
+        rl.cursor = 0;
+      }
     };
     const submit = () => {
       if (done) return;
