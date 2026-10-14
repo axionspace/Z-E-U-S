@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { randomInt, createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
-import { emitKeypressEvents, clearLine, cursorTo } from 'node:readline';
+import { emitKeypressEvents, clearLine, cursorTo, moveCursor } from 'node:readline';
 import { Writable } from 'node:stream';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -268,6 +268,8 @@ function restoreTty() {
   try { if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false); } catch {}
 }
 
+// The guide shown before the token prompt: one small card, the link on its own line so it
+// stays clickable and copyable, and a one-line privacy note.
 function tokenGuide(url) {
   if (!COLOR) {
     console.log('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
@@ -313,6 +315,7 @@ async function askSecret(rl, q) {
   return new Promise((resolve) => {
     const stdin = process.stdin;
     const head = '  ' + S.bold('🔑 Token') + S.dim(' ›') + ' ';
+    const hint = 'paste your token here';
     let value = '';
     let done = false;
 
@@ -320,32 +323,38 @@ async function askSecret(rl, q) {
       try { clearLine(process.stdout, 0); cursorTo(process.stdout, 0); }
       catch { process.stdout.write('\r'); }
     };
+    // Empty input: draw the dim hint, then pull the caret back to the START of it, so it
+    // behaves like a real placeholder (the caret blinks before the hint, and the hint
+    // disappears as soon as the first character arrives). Otherwise: the fixed mask.
     const render = () => {
-      const body = value.length
-        ? S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars')
-        : S.dim('paste your token here');
       wipe();
-      process.stdout.write(head + body);
+      if (value.length) {
+        process.stdout.write(head + S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars'));
+      } else {
+        process.stdout.write(head + S.dim(hint));
+        try { moveCursor(process.stdout, -hint.length, 0); } catch {}
+      }
     };
+    const onExit = () => restoreTty();
     const cleanup = () => {
       stdin.removeListener('keypress', onKey);
       process.removeListener('exit', onExit);
       restoreTty();
     };
-    const onExit = () => restoreTty();
     const submit = () => {
       if (done) return;
       const v = value.trim();
       if (!v) { render(); return; }           // Enter on empty input is ignored
       done = true;
       cleanup();
-      wipe();                                  // replace the mask line, never add another
+      wipe();                                  // replace the mask line — never add a second one
       process.stdout.write('  ✅ ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n');
       resolve(v);
     };
     const onKey = (str, key) => {
       if (done) return;
       if (key && (key.name === 'return' || key.name === 'enter')) { submit(); return; }
+      // Ctrl+C must always work, even while the terminal is in raw mode
       if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
       if (key && key.name === 'backspace') { value = value.slice(0, -1); render(); return; }
       if (str && /^[\x21-\x7e]+$/.test(str) && !(key && (key.ctrl || key.meta))) { value += str; render(); }
@@ -691,8 +700,8 @@ function verifyTransform(srcTxt, out, det, exp) {
   // Row-set invariant: the sorted decode of the personalised table must equal the sorted
   // decode of the original table — nothing added, nothing dropped, nothing altered.
   if (decoded.length === exp.N && exp.plain0.length === exp.N) {
-    const a = [...decoded].sort().join('');
-    const b = [...exp.plain0].sort().join('');
+    const a = [...decoded].sort().join('');
+    const b = [...exp.plain0].sort().join('');
     if (a !== b) problems.push('sorted decoded row set differs from the original build');
   }
   // author-side sanity: everything before the generated table must be untouched
