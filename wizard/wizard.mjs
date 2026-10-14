@@ -318,6 +318,13 @@ async function askSecret(rl, q) {
     const hint = 'paste your token here';
     let value = '';
     let done = false;
+    let warned = false;
+    const LANG_WARN = 'switch keyboard to English (Alt+Shift)';
+    // The blinking caret is shown only while the field is empty (in front of the hint) and
+    // is hidden as soon as the mask appears. It is ALWAYS restored on every exit path.
+    const setCaret = (show) => {
+      try { if (process.stdout.isTTY) process.stdout.write(show ? '\x1b[?25h' : '\x1b[?25l'); } catch {}
+    };
 
     const wipe = () => {
       try { clearLine(process.stdout, 0); cursorTo(process.stdout, 0); }
@@ -329,16 +336,21 @@ async function askSecret(rl, q) {
     const render = () => {
       wipe();
       if (value.length) {
-        process.stdout.write(head + S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars'));
+        // something was typed: only the mask is shown and the caret is hidden completely
+        setCaret(false);
+        process.stdout.write(head + S.cyan('•'.repeat(8)) + S.dim('   ' + value.length + ' chars') + (warned ? '   ' + S.yellow('! ' + LANG_WARN) : ''));
       } else {
-        process.stdout.write(head + S.dim(hint));
-        try { moveCursor(process.stdout, -hint.length, 0); } catch {}
+        setCaret(true);
+        const txt = warned ? LANG_WARN : hint;
+        process.stdout.write(head + (warned ? S.yellow(txt) : S.dim(txt)));
+        try { moveCursor(process.stdout, -txt.length, 0); } catch {}
       }
     };
-    const onExit = () => restoreTty();
+    const onExit = () => { setCaret(true); restoreTty(); };
     const cleanup = () => {
       stdin.removeListener('keypress', onKey);
       process.removeListener('exit', onExit);
+      setCaret(true);
       restoreTty();
     };
     const submit = () => {
@@ -356,8 +368,22 @@ async function askSecret(rl, q) {
       if (key && (key.name === 'return' || key.name === 'enter')) { submit(); return; }
       // Ctrl+C must always work, even while the terminal is in raw mode
       if (key && key.ctrl && key.name === 'c') { cleanup(); process.stdout.write('\n'); process.exit(130); }
-      if (key && key.name === 'backspace') { value = value.slice(0, -1); render(); return; }
-      if (str && /^[\x21-\x7e]+$/.test(str) && !(key && (key.ctrl || key.meta))) { value += str; render(); }
+      if (key && key.name === 'backspace') { value = value.slice(0, -1); warned = false; render(); return; }
+      if (str && !(key && (key.ctrl || key.meta))) {
+        // An API token is plain ASCII. Persian / Arabic / any other non-ASCII letter (typed with
+        // the wrong keyboard layout, or pasted) is never added and never drawn — the field stays
+        // consistent and a short hint explains what to do. Spaces, control characters and
+        // invisible bidi marks (ZWNJ, RLM, LRM ...) are dropped silently.
+        let added = false, bad = false;
+        for (const ch of str) {
+          if (/[\x21-\x7e]/.test(ch)) { value += ch; added = true; }
+          else if (ch <= ' ' || /[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/.test(ch)) continue;
+          else bad = true;
+        }
+        if (bad) warned = true;
+        else if (added) warned = false;
+        if (added || bad) render();
+      }
     };
 
     process.stdout.write('\n');
