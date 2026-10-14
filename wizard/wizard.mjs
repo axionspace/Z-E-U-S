@@ -1439,12 +1439,8 @@ async function main() {
 
   // ---------- [3/10] worker name
   nextStep('Worker name');
-  const suggestedName = profile.workerName || 'web-' + randName(5);
-  if (profile.workerName) {
-    console.log(`  An install profile exists in this folder — press Enter to reuse "${profile.workerName}", or type another name for a second panel.`);
-  } else {
-    console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
-  }
+  const suggestedName = randName(6);
+  console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
   const workerName = (await ask(rl, 'Worker name', suggestedName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the suggested random name.');
 
