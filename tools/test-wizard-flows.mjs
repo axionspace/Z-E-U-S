@@ -137,7 +137,8 @@ function startMock(opt = {}) {
         }
         if (method === 'GET' && p.startsWith(`/accounts/${ACCOUNT_ID}/d1/database/`)) {
           const id = p.split('/').pop();
-          return state.dbs.some((d) => d.uuid === id) ? json(200, okEnv({ uuid: id, name: 'stored' })) : json(404, errEnv(7002, 'Database not found'));
+          const hit = state.dbs.find((d) => d.uuid === id);
+          return hit ? json(200, okEnv({ uuid: id, name: hit.name })) : json(404, errEnv(7002, 'Database not found'));
         }
         const qm = p.match(new RegExp('^/accounts/' + ACCOUNT_ID + '/d1/database/([^/]+)/query$'));
         if (qm && method === 'POST') {
@@ -319,8 +320,8 @@ try {
     console.log('');
   }
 
-  // ------------------------------------------------------------------ S3 update keeps identity
-  console.log('• S3 --update reuses saved defaults and keeps the identity');
+  // ------------------------------------------------------------------ S3 update mints a fresh identity
+  console.log('• S3 --update reuses saved defaults and mints a fresh identity');
   {
     const { server, state, port } = await startMock({
       dbs: [{ name: 'web-mock-db', uuid: DB_UUID }],
@@ -330,12 +331,13 @@ try {
     state.scripts['panel-one'] = { bytes: Buffer.from(CANON), metadata: null };
     const prof0 = { version: 1, seed: 'ab'.repeat(16), fingerprint: true, accountId: ACCOUNT_ID, accountName: 'Mock Account', workerName: 'panel-one', dbName: 'web-mock-db', dbId: DB_UUID, subdomain: SUB, panelUrl: 'https://x/panel', names: { _ZK: '_zkold', _G: '_gold' }, rows: 89, installedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
     writeFileSync(profPath, JSON.stringify(prof0));
-    const r = await run(root, port, ['--update'], [TOKEN, '', '', '']);
+    const r = await run(root, port, ['--update'], [TOKEN, '', '']);
     check(!r.fatal && r.code === 0, 'S3 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
-    check(r.out.includes('manual update (saved defaults)'), 'S3 banner shows the saved defaults');
-    check(r.out.includes('Account ID ['), 'S3 prompts with the saved account as default');
-    check(r.out.includes('Existing worker found: panel-one'), 'S3 found the existing worker');
-    check(r.out.includes("Keeping this panel's existing build identity"), 'S3 keeps the stored identity');
+    check(r.out.includes('Zeus Install Wizard — update'), 'S3 banner announces an update');
+    check(r.out.includes('Account: Mock Account'), 'S3 reuses the saved account without asking again');
+    check(!r.out.includes('Account ID ['), 'S3 never re-prompts for the stored Account ID');
+    check(r.out.includes('Updating existing worker: panel-one'), 'S3 found the existing worker');
+    check(r.out.includes('This update gets its own build identity'), 'S3 mints a fresh identity like an install');
     check(r.out.includes('row census before: users=5, settings=12'), 'S3 read the database census first', r.out.match(/row census before.*/)?.[0]);
     check(r.out.includes('Database intact: 2 tables with identical row counts'), 'S3 proves the rows survived');
     check(r.out.includes('Update complete'), 'S3 finished');
@@ -358,7 +360,7 @@ try {
       check(r.out.includes('compatibility date upgraded 2025-01-01'), 'S3 the upgrade is announced');
     }
     const prof = readProf();
-    check(!!prof && prof.seed === prof0.seed, 'S3 identity seed unchanged');
+    check(!!prof && prof.seed !== prof0.seed && /^[0-9a-f]{32}$/.test(prof.seed), 'S3 identity seed rotated on update', prof0.seed + ' -> ' + (prof && prof.seed));
     check(!!prof && prof.updatedAt !== prof0.updatedAt && prof.installedAt === prof0.installedAt, 'S3 refreshed updatedAt only');
     check(!!prof && !JSON.stringify(prof).includes(TOKEN), 'S3 profile still holds no token');
     check(state.requests.every((q) => q.method !== 'DELETE'), 'S3 no DELETE request issued', JSON.stringify(state.requests.filter((q) => q.method === 'DELETE')));
@@ -367,13 +369,13 @@ try {
   }
 
   // ------------------------------------------------------------------ S4 --update --rotate
-  console.log('• S4 --update --rotate mints a new identity');
+  console.log('• S4 --update --rotate also mints a new identity');
   {
     const { server, state, port } = await startMock({ dbs: [{ name: 'web-mock-db', uuid: DB_UUID }] });
     const before = readProf();
-    const r = await run(root, port, ['--update', '--rotate'], [TOKEN, '', '', '']);
+    const r = await run(root, port, ['--update', '--rotate'], [TOKEN, '', '']);
     check(!r.fatal && r.code === 0, 'S4 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2000));
-    check(r.out.includes('--rotate: this panel gets a brand-new build identity'), 'S4 announces the rotation');
+    check(r.out.includes('This update gets its own build identity'), 'S4 announces the fresh identity');
     const prof = readProf();
     check(!!prof && prof.seed !== before.seed && /^[0-9a-f]{32}$/.test(prof.seed), 'S4 seed rotated', before.seed + ' -> ' + (prof && prof.seed));
     const put = state.puts[0];
@@ -546,7 +548,7 @@ try {
     check(r.out.includes('••••••••') && r.out.includes('(received, ' + TOKEN.length + ' chars)'), 'S15 shows only the fixed mask with the token length');
     const leakLines = r.out.split('\n').filter((l) => l.includes(TOKEN));
     check(leakLines.length === 0, 'S15 the typed token never appears in any output line', JSON.stringify(leakLines.slice(0, 3)));
-    check(r.out.includes('never stored anywhere'), 'S15 tells the user in plain English that the token is never stored');
+    check(r.out.includes('saved only on this machine'), 'S15 tells the user in plain English where the token is stored');
     // The reader must switch the console into raw mode: on Windows that is the only way to
     // stop conhost/PowerShell from echoing the keys itself (muting readline's output is not).
     const wizTxt = readFileSync(WIZARD_SRC, 'utf8');
@@ -762,23 +764,47 @@ try {
     console.log('');
   }
 
-  // ------------------------------------------------------------------ S25 interactive update choice
-  console.log('• S25 interactive wizard detects existing install and allows updating via menu');
+  // ------------------------------------------------------------------ S25 panel menu drives the update
+  console.log('• S25 the panel menu on the account routes straight into an update');
   {
-    const prof0 = {
-      version: 1, seed: 'ab'.repeat(16), fingerprint: true,
-      accountId: ACCOUNT_ID, accountName: 'Mock Account',
-      workerName: 'panel-existing', dbName: 'panel-existing-db', dbId: DB_UUID,
-      subdomain: SUB, panelUrl: 'https://panel-existing.te_st.workers.dev/panel',
-      names: { _ZK: '_zkold', _G: '_gold' }, rows: 89,
-      installedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z'
-    };
-    writeFileSync(profPath, JSON.stringify(prof0));
-    const { server, state, port } = await startMock({ dbs: [{ name: 'panel-existing-db', uuid: DB_UUID }] });
-    const r = await run(root, port, ['--menu'], ['1', TOKEN, '', '', '']);
+    rmSync(profPath, { force: true });
+    rmSync(tokenPath, { force: true });
+    const { server, state, port } = await startMock({
+      scripts: { 'panel-existing': { bytes: Buffer.from(CANON), metadata: null } },
+      dbs: [{ name: 'panel-existing-db', uuid: DB_UUID }],
+    });
+    const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '1', '']);
     check(!r.fatal && r.code === 0, 'S25 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
-    check(r.out.includes('Existing installation found') || r.out.includes('Update panel'), 'S25 prompt offers update option');
+    check(r.out.includes('Existing panels on this account') && r.out.includes('Update "panel-existing"'), 'S25 lists the live panels and offers to update them');
+    check(r.out.includes('+ Deploy a new panel'), 'S25 also offers a fresh deployment');
     check(r.out.includes('Update complete'), 'S25 update completed successfully');
+    const put = state.puts[0];
+    check(!!put && put.name === 'panel-existing', 'S25 updated the chosen worker', put && put.name);
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S25b account menu numbers saved logins
+  console.log('• S25b a saved login is picked by number before anything else happens');
+  {
+    rmSync(profPath, { force: true });
+    writeFileSync(tokenPath, JSON.stringify({
+      tokens: [
+        { token: TOKEN, accountId: ACCOUNT_ID, accountName: 'Primary Account' },
+        { token: 'second-token', accountId: 'b'.repeat(32), accountName: 'Backup Account' },
+      ],
+    }));
+    const { server, state, port } = await startMock({
+      scripts: { 'my-panel': { bytes: Buffer.from(CANON), metadata: null } },
+      dbs: [{ name: 'my-panel-db', uuid: DB_UUID }],
+    });
+    const r = await run(root, port, ['--test-saved-token', '--test-panels-menu'], ['1', '1', '']);
+    check(!r.fatal && r.code === 0, 'S25b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('1) Primary Account') && r.out.includes('2) Backup Account'), 'S25b numbers every saved login');
+    check(r.out.includes('3) Enter a new Cloudflare API token'), 'S25b keeps the new-token option at the end');
+    check(r.out.includes('Token is valid (account: Primary Account)'), 'S25b uses the picked login');
+    check(r.out.includes('Existing panels on this account') && r.out.includes('my-panel'), 'S25b then lists that account\'s panels');
+    check(r.out.includes('Update complete'), 'S25b finished the update it was routed into');
     server.close();
     console.log('');
   }
@@ -849,14 +875,32 @@ try {
   {
     rmSync(profPath, { force: true });
     rmSync(tokenPath, { force: true });
+    // a panel that already exists with its own database binding in place
     const { server, state, port } = await startMock({
-      scripts: { 'my-active-panel': { bytes: Buffer.from(CANON), metadata: null } },
+      scripts: {
+        'my-active-panel': {
+          bytes: Buffer.from(CANON),
+          metadata: { bindings: [{ type: 'd1', name: 'DB', id: DB_UUID }], compatibility_date: '2026-07-10', compatibility_flags: ['nodejs_compat'] },
+        },
+      },
       dbs: [{ name: 'my-active-panel-db', uuid: DB_UUID }],
     });
-    const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '1', '', '', '', 'n']);
+    const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '1', '', '']);
     check(!r.fatal && r.code === 0, 'S27 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('Existing panels on this account') && r.out.includes('my-active-panel'), 'S27 lists live workers on the account');
     check(r.out.includes('Update complete'), 'S27 successfully routed to update');
+    // A panel found straight from Cloudflare (never installed from this folder) still
+    // gets a fresh identity, and its own live D1 binding is what gets re-attached.
+    check(r.out.includes('This update gets its own build identity'), 'S27 the chosen panel gets a fresh identity');
+    check(r.out.includes('Database bound to this worker'), 'S27 reads the live D1 binding from the worker');
+    const put = state.puts[0];
+    check(!!put && put.name === 'my-active-panel', 'S27 uploaded to the chosen worker', put && put.name);
+    if (put) {
+      const d = detectPrelude(put.bytes.toString('utf8'));
+      check(!!d && d.keyName !== CANON_DET.keyName, 'S27 the uploaded bytes carry a brand-new identity', d && d.keyName + ' (was ' + CANON_DET.keyName + ')');
+      const b = put.metadata && put.metadata.bindings;
+      check(Array.isArray(b) && b.filter((x) => x.type === 'd1').length === 1, 'S27 re-attached exactly one D1 binding', JSON.stringify(b));
+    }
     server.close();
     console.log('');
   }

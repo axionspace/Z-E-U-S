@@ -135,9 +135,9 @@ async function pause(ms, label = '') {
   process.stdout.write('\r\x1b[2K');
 }
 const STEP_LIST = [
-  'Validate your Cloudflare API token', 'Pick the account to install into', 'Choose the worker name',
-  'Read your workers.dev subdomain', 'Create the D1 database, or reuse one', 'Fetch the hardened source',
-  'Give this install its own build fingerprint', 'Upload the worker and verify the bytes', 'Enable the public workers.dev address',
+  'Validate your Cloudflare API token', 'Pick the account to deploy into', 'Choose the panel to update, or build a new one',
+  'Read your workers.dev subdomain', 'Create or re-attach the D1 database', 'Fetch the hardened source',
+  'Give this deployment its own build fingerprint', 'Upload the worker and verify the bytes', 'Enable the public workers.dev address',
   'Check the address, then optionally add a domain',
 ];
 function bannerStyled() {
@@ -146,9 +146,9 @@ function bannerStyled() {
   cardSep();
   STEP_LIST.forEach((t, i) => cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + t));
   cardSep();
-  cardRow(S.dim('Later on, ') + S.cyan('node wizard.mjs --update') + S.dim(' re-deploys with the saved defaults.'));
+  cardRow(S.dim('Saved logins, accounts and panels are offered as numbered menus.'));
   cardEnd();
-  console.log('     🔒 ' + S.dim('Your API token is never stored anywhere — not in a file, not in a log.'));
+  console.log('     🔒 ' + S.dim('Your API token is saved only on this machine (.token.json) — never uploaded, printed, or logged.'));
 }
 function banner() {
   if (COLOR) return bannerStyled();
@@ -157,52 +157,52 @@ ${line}
     ⚡ Zeus Install Wizard — automated installer for the hardened panel
 ${line}
     This wizard will:
-       [1/10]  Validate your Cloudflare API token (a pre-filled creation link is printed)
-       [2/10]  Pick the account to install into
-       [3/10]  Choose the worker name (a neutral random one is suggested)
+       [1/10]  Validate your Cloudflare API token (saved logins are offered by number)
+       [2/10]  Pick the account behind that login
+       [3/10]  Choose a panel to update, or build a new one (both keep your data)
        [4/10]  Read your workers.dev subdomain
-       [5/10]  Create the D1 database, or reuse an existing one
+       [5/10]  Create the D1 database, or re-attach the existing one
        [6/10]  Fetch the hardened source from this repository
-       [7/10]  Give this install its own build fingerprint (new key, order and names)
+       [7/10]  Give this deployment its own build fingerprint (new key, order and names)
        [8/10]  Upload the worker and verify the deployed bytes match
        [9/10]  Enable the public workers.dev address
       [10/10]  Check the address, then (optionally) attach a custom domain
-    Later on, "node wizard.mjs --update" re-deploys using the saved defaults.
+    Later on, "node wizard.mjs --update" repeats this using the saved defaults.
 ${line}
-    🔒 Safety: your API token is never stored anywhere — not in a file, not in a log.
+    🔒 Safety: your API token is saved only on this machine (.token.json) — never uploaded, printed, or logged.
 ${line}`);
 }
 function bannerUpdate(profile) {
+  const hasProfile = !!(profile && profile.workerName);
+  const dbLabel = (profile && profile.dbName) || '(read from the worker)';
   if (COLOR) {
-    cardTop('⚡ ZEUS  ·  Manual update');
-    cardRow(S.dim('saved defaults — nothing is deleted, only the worker script is replaced'));
+    cardTop('⚡ ZEUS  ·  Update');
+    cardRow(S.dim('only the worker script is replaced — the database and its rows are never touched'));
+    if (hasProfile) {
+      cardSep();
+      cardRow(S.dim('account  ') + (profile.accountName || profile.accountId || '(from the saved login)'));
+      cardRow(S.dim('worker   ') + profile.workerName);
+      cardRow(S.dim('database ') + dbLabel + (profile.dbId ? S.dim(' (' + String(profile.dbId).slice(0, 8) + '…)') : ''));
+      cardRow(S.dim('address  ') + S.cyan(profile.panelUrl || '(unknown)'));
+    }
     cardSep();
-    cardRow(S.dim('account  ') + (profile.accountName || profile.accountId));
-    cardRow(S.dim('worker   ') + profile.workerName);
-    cardRow(S.dim('database ') + (profile.dbName || '(none)') + (profile.dbId ? S.dim(' (' + String(profile.dbId).slice(0, 8) + '…)') : ''));
-    cardRow(S.dim('address  ') + S.cyan(profile.panelUrl || '(unknown)'));
-    cardRow(S.dim('identity ') + (profile.names ? Object.values(profile.names).slice(0, 2).join(', ') + ' …' : 'shared repository build'));
-    cardSep();
-    cardRow(S.dim('Your D1 database, its rows, the workers.dev address and any attached'));
-    cardRow(S.dim('domain stay exactly as they are. Only a Cloudflare 1101 may recreate'));
-    cardRow(S.dim('the worker script — never the database.'));
+    cardRow(S.dim('This update gets a brand-new build identity (new key, row order and'));
+    cardRow(S.dim('names) — but your D1 database, its rows, the workers.dev address and any'));
+    cardRow(S.dim('attached domain stay exactly as they are. Only a Cloudflare 1101 may'));
+    cardRow(S.dim('recreate the worker script — never the database.'));
     cardEnd();
     return;
   }
   console.log(`
 ${line}
-    ⚡ Zeus Install Wizard — manual update (saved defaults)
+    ⚡ Zeus Install Wizard — update
 ${line}
-    manual update (saved defaults) — nothing is deleted, only the worker script is replaced
-      account : ${profile.accountName || profile.accountId}
-      worker  : ${profile.workerName}
-      database: ${profile.dbName || '(none)'}${profile.dbId ? ' (' + String(profile.dbId).slice(0, 8) + '…)' : ''}
-      address : ${profile.panelUrl || '(unknown)'}
-      identity: ${profile.names ? Object.values(profile.names).slice(0, 2).join(', ') + ' …' : 'shared repository build'}
-    Nothing in this run deletes your data: the D1 database, its rows, the workers.dev
-    address and any attached domain are left exactly as they are. (If Cloudflare itself
-    reports error 1101 on the address, the worker script may be recreated — never the
-    database.)
+    An update replaces only the worker script. It gets a brand-new build identity,
+    but nothing else changes:
+${hasProfile ? `      account : ${profile.accountName || profile.accountId}\n      worker  : ${profile.workerName}\n      database: ${dbLabel}${profile.dbId ? ' (' + String(profile.dbId).slice(0, 8) + '…)' : ''}\n      address : ${profile.panelUrl || '(unknown)'}\n` : '      (account, panel and database are picked below)\n'}
+    The D1 database, its rows, the workers.dev address and any attached domain are
+    left exactly as they are. (If Cloudflare itself reports error 1101 on the
+    address, the worker script may be recreated — never the database.)
 ${line}`);
 }
 
@@ -819,10 +819,14 @@ function saveLocalToken(data) {
   return false;
 }
 
+// Acquire the API token. Saved logins are offered as a numbered menu, so the
+// second time this wizard runs the account is picked with a single digit
+// instead of pasting a token again. Returns the saved entry that was used
+// (carrying its accountId/accountName) or null when a new token was typed.
 async function acquireToken(rl, tokenUrl) {
   if (TOKEN) {
     const verify = await cf('/user/tokens/verify');
-    if (verify.ok) return;
+    if (verify.ok) return null;
   }
 
   const envTok = tokenFromEnv();
@@ -832,48 +836,46 @@ async function acquireToken(rl, tokenUrl) {
     const verify = await cf('/user/tokens/verify');
     if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions.');
     ok('Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
-    return;
+    return null;
   }
 
   const savedList = loadSavedTokens();
   const allowSavedPrompt = !pipedLines || process.argv.includes('--test-saved-token');
   if (allowSavedPrompt && savedList.length > 0) {
     const newIdx = savedList.length + 1;
+    const labelOf = (acc, i) => acc.accountName || acc.accountId || ('Saved login #' + (i + 1));
     if (COLOR) {
       cardTop('🔑 Cloudflare API token');
-      cardRow(S.dim('Saved accounts:'));
+      cardRow(S.dim('Saved logins on this machine:'));
+      cardSep();
       savedList.forEach((acc, i) => {
-        const label = acc.accountName || acc.accountId || ('Account #' + (i + 1));
-        cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(label) + S.dim('  (••••••••)'));
+        cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(labelOf(acc, i)) + S.dim('   (••••••••)'));
       });
       cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.dim('Enter a new Cloudflare API token'));
       cardEnd();
     } else {
-      console.log('\n  Saved Cloudflare accounts:');
+      console.log('\n  Saved logins on this machine:');
       savedList.forEach((acc, i) => {
-        const label = acc.accountName || acc.accountId || ('Account #' + (i + 1));
-        console.log(`     ${i + 1}) ${label}  (••••••••)`);
+        console.log(`     ${i + 1}) ${labelOf(acc, i)}   (••••••••)`);
       });
       console.log(`     ${newIdx}) Enter a new Cloudflare API token\n`);
     }
 
     const choice = (await ask(rl, `Select account (1-${newIdx})`, '1')).trim().toLowerCase();
     let pickedIdx = -1;
-    if (choice === '' || choice === '1' || choice === 'y' || choice === 'yes') {
-      pickedIdx = 0;
-    } else if (/^\d+$/.test(choice)) {
-      const n = parseInt(choice, 10);
+    if (choice === '' || /^\d+$/.test(choice)) {
+      const n = choice === '' ? 1 : parseInt(choice, 10);
       if (n >= 1 && n <= savedList.length) pickedIdx = n - 1;
     }
 
     if (pickedIdx >= 0) {
       const picked = savedList[pickedIdx];
-      const accLabel = picked.accountName || picked.accountId || 'Cloudflare Account';
+      const accLabel = labelOf(picked, pickedIdx);
       TOKEN = picked.token;
       const verify = await cf('/user/tokens/verify');
       if (verify.ok) {
         ok('Token is valid (account: ' + accLabel + ')' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
-        return;
+        return picked;
       }
       warn('The saved token for "' + accLabel + '" is no longer valid (' + verify.errors + ') — please enter a new token.');
     }
@@ -884,6 +886,74 @@ async function acquireToken(rl, tokenUrl) {
   const verify = await cf('/user/tokens/verify');
   if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions and paste it here.');
   ok('Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
+  return null;
+}
+
+// Pick the Cloudflare account behind this token. A saved or single account is
+// taken automatically; several get a numbered menu. Returns null when the
+// token cannot list anything, so the caller can fall back to manual entry.
+async function selectCloudflareAccount(rl, defaultAccountId = '') {
+  const accounts = await cf('/accounts?per_page=50');
+  if (!accounts.ok || !Array.isArray(accounts.data.result) || !accounts.data.result.length) {
+    return null;
+  }
+  const list = accounts.data.result;
+  if (defaultAccountId) {
+    const saved = list.find((a) => a.id === defaultAccountId);
+    if (saved) return { accountId: saved.id, accountName: saved.name || saved.id };
+  }
+  if (list.length === 1) {
+    return { accountId: list[0].id, accountName: list[0].name || list[0].id };
+  }
+  console.log('  Cloudflare accounts on this login:');
+  list.forEach((a, i) => {
+    const isDef = defaultAccountId && a.id === defaultAccountId;
+    console.log(`     ${i + 1}) ${a.name}  (${String(a.id).slice(0, 8)}...)${isDef ? '   (saved default)' : ''}`);
+  });
+  const defIdx = defaultAccountId ? (list.findIndex((a) => a.id === defaultAccountId) + 1 || 1) : 1;
+  const raw = (await ask(rl, 'Account number', String(defIdx))).trim();
+  const picked = list[parseInt(raw, 10) - 1] || list[defIdx - 1];
+  if (!picked) fail('Invalid selection.', 'Type one of the numbers listed above.');
+  return { accountId: picked.id, accountName: picked.name || picked.id };
+}
+
+// Fetch the live worker scripts on this account.
+async function fetchWorkers(accountId) {
+  const listRes = await cf(`/accounts/${accountId}/workers/scripts?per_page=100`);
+  return (listRes.ok && Array.isArray(listRes.data.result)) ? listRes.data.result : [];
+}
+
+// Let the user pick one live worker to update with a fresh fingerprint, or
+// deploy a brand-new panel next to them. The caller guarantees the list is
+// non-empty, so this always consumes exactly one answer.
+async function selectPanelTarget(rl, accountName, existingWorkers) {
+  const newIdx = existingWorkers.length + 1;
+  if (COLOR) {
+    cardTop('⚡ ZEUS  ·  Existing panels on this account');
+    cardRow(S.dim('Found ' + existingWorkers.length + ' panel(s) in ') + S.bold(accountName));
+    cardSep();
+    existingWorkers.forEach((w, i) => {
+      cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold('Update "' + w.id + '"') + S.dim(' (fresh fingerprint, data preserved)'));
+    });
+    cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.bold('+ Deploy a new panel') + S.dim(' (fresh worker & new database)'));
+    cardEnd();
+  } else {
+    console.log(`\n  Existing panels on this account (${accountName}):`);
+    existingWorkers.forEach((w, i) => {
+      console.log(`     ${i + 1}) Update "${w.id}" (fresh fingerprint, data preserved)`);
+    });
+    console.log(`     ${newIdx}) + Deploy a new panel (fresh worker & new database)\n`);
+  }
+  const choiceRaw = (await ask(rl, `Select an action (1-${newIdx})`, '1')).trim().toLowerCase();
+  let chosenIdx = -1;
+  if (choiceRaw === '' || choiceRaw === '1') {
+    chosenIdx = 0;
+  } else if (/^\d+$/.test(choiceRaw)) {
+    const num = parseInt(choiceRaw, 10);
+    if (num >= 1 && num <= existingWorkers.length) chosenIdx = num - 1;
+  }
+  if (chosenIdx >= 0) return { mode: 'update', workerName: existingWorkers[chosenIdx].id, workers: existingWorkers };
+  return { mode: 'new', workers: existingWorkers };
 }
 
 // ------------------------------------------------------------- fingerprint + upload
@@ -1487,39 +1557,6 @@ async function main() {
 
   // Saved defaults from an earlier run in this folder (identity + account + worker + D1)
   const profile = loadProfile() || {};
-  const wantMenu = process.argv.includes('--menu');
-  if (wantMenu && profile && profile.workerName && !process.argv.includes('--install')) {
-    if (COLOR) {
-      cardTop('⚡ ZEUS  ·  Existing installation found');
-      cardRow(S.dim('worker   ') + S.bold(profile.workerName));
-      cardRow(S.dim('database ') + (profile.dbName || '(none)'));
-      cardRow(S.dim('address  ') + S.cyan(profile.panelUrl || '(unknown)'));
-      cardSep();
-      cardRow(S.cyan('1') + '  ' + S.bold('Update panel') + S.dim(' (recommended — updates code, preserves all data)'));
-      cardRow(S.cyan('2') + '  ' + S.bold('Fresh install') + S.dim(' (new worker name and new database)'));
-      cardRow(S.cyan('3') + '  ' + S.bold('Run diagnostics') + S.dim(' (--doctor, check worker health)'));
-      cardEnd();
-    } else {
-      console.log(`\n  Existing installation found in this folder:`);
-      console.log(`    worker  : ${profile.workerName}`);
-      console.log(`    database: ${profile.dbName || '(none)'}`);
-      console.log(`    address : ${profile.panelUrl || '(unknown)'}\n`);
-      console.log('  1) Update panel (recommended — updates code, preserves all data)');
-      console.log('  2) Fresh install (new worker name and new database)');
-      console.log('  3) Run diagnostics (--doctor, check worker health)\n');
-    }
-    const choice = (await ask(rl, 'Select an action (1/2/3)', '1')).trim();
-    if (choice === '1') {
-      cleanup();
-      return updateMain();
-    }
-    if (choice === '3') {
-      cleanup();
-      process.argv.push(profile.workerName);
-      return doctorMain();
-    }
-    console.log('');
-  }
 
   let seed = null;
   if (noFingerprint) {
@@ -1534,71 +1571,39 @@ async function main() {
 
   // ---------- [1/10] token
   nextStep('Validate API token');
-  why('It prints a pre-filled token-creation link, then takes your token and verifies it.');
+  why('A saved login is offered first; otherwise it prints a pre-filled token-creation link.');
   const tokenUrl = makeTokenUrl();
-  await acquireToken(rl, tokenUrl);
+  const savedLogin = await acquireToken(rl, tokenUrl);
 
   // ---------- [2/10] account
   nextStep('Select account');
-  let accounts = await cf('/accounts?per_page=50');
-  let accountId, accountName;
-  if (!accounts.ok || !accounts.data.result?.length) {
-    warn('Could not list accounts with this token.');
-    accountId = await ask(rl, 'Enter your Account ID manually (from the overview page of your domain/worker)', '');
-    if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('Account ID format is invalid (32 hex characters).', 'Copy the Account ID from the Cloudflare dashboard sidebar.');
-    accountName = accountId;
-  } else if (accounts.data.result.length === 1) {
-    accountId = accounts.data.result[0].id;
-    accountName = accounts.data.result[0].name;
+  why('The account that owns the panel is picked — a saved one is reused automatically.');
+  let accountId = '';
+  let accountName = '';
+  const pickedAccount = await selectCloudflareAccount(rl, savedLogin && savedLogin.accountId);
+  if (pickedAccount) {
+    accountId = pickedAccount.accountId;
+    accountName = pickedAccount.accountName;
     ok('Account: ' + accountName);
   } else {
-    accounts.data.result.forEach((a, i) => console.log(`     ${i + 1}) ${a.name}  (${a.id.slice(0, 8)}...)`));
-    const idx = parseInt(await ask(rl, 'Account number', '1'), 10);
-    const picked = accounts.data.result[idx - 1];
-    if (!picked) fail('Invalid selection.', 'Type one of the numbers listed above.');
-    accountId = picked.id; accountName = picked.name;
-    ok('Account: ' + accountName);
+    warn('Could not list accounts with this token.');
+    accountId = (await ask(rl, 'Enter your Account ID manually (from the overview page of your domain/worker)', '')).trim();
+    if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('Account ID format is invalid (32 hex characters).', 'Copy the Account ID from the Cloudflare dashboard sidebar.');
+    accountName = accountId;
   }
   saveLocalToken({ token: TOKEN, accountId, accountName, updatedAt: new Date().toISOString() });
 
-  // Live Cloudflare check: look up existing worker scripts/panels on this account
-  const listRes = await cf(`/accounts/${accountId}/workers/scripts?per_page=100`);
-  const existingWorkers = (listRes.ok && Array.isArray(listRes.data.result)) ? listRes.data.result : [];
-  const wantExistingPanelsMenu = !process.argv.includes('--install') && (!pipedLines || process.argv.includes('--test-panels-menu')) && existingWorkers.length > 0;
-  if (wantExistingPanelsMenu) {
-    const newIdx = existingWorkers.length + 1;
-    if (COLOR) {
-      cardTop('⚡ ZEUS  ·  Existing panels on this account');
-      cardRow(S.dim('Found ' + existingWorkers.length + ' panel(s) in ') + S.bold(accountName));
-      cardSep();
-      existingWorkers.forEach((w, i) => {
-        cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold('Update "' + w.id + '"') + S.dim(' (preserves database & settings)'));
-      });
-      cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.bold('+ Deploy a new panel') + S.dim(' (fresh worker & new database)'));
-      cardEnd();
-    } else {
-      console.log(`\n  Existing panels on this account (${accountName}):`);
-      existingWorkers.forEach((w, i) => {
-        console.log(`     ${i + 1}) Update "${w.id}" (preserves database & settings)`);
-      });
-      console.log(`     ${newIdx}) + Deploy a new panel (fresh worker & new database)\n`);
-    }
-
-    const choiceRaw = (await ask(rl, `Select an action (1-${newIdx})`, '1')).trim().toLowerCase();
-    let chosenIdx = -1;
-    if (choiceRaw === '' || choiceRaw === '1') {
-      chosenIdx = 0;
-    } else if (/^\d+$/.test(choiceRaw)) {
-      const num = parseInt(choiceRaw, 10);
-      if (num >= 1 && num <= existingWorkers.length) {
-        chosenIdx = num - 1;
-      }
-    }
-
-    if (chosenIdx >= 0) {
-      const targetWorker = existingWorkers[chosenIdx].id;
+  // ---------- what to do on this account ----------
+  // Existing panels are listed straight from Cloudflare, so the owner picks
+  // "update this one" (fresh fingerprint, data preserved) or "deploy a new
+  // panel" with a single number.
+  const existingWorkers = await fetchWorkers(accountId);
+  const allowPanelMenu = !process.argv.includes('--install') && (!pipedLines || process.argv.includes('--test-panels-menu'));
+  if (allowPanelMenu && existingWorkers.length > 0) {
+    const target = await selectPanelTarget(rl, accountName, existingWorkers);
+    if (target.mode === 'update') {
       cleanup();
-      return updateMain({ accountId, workerName: targetWorker, accountName });
+      return updateMain({ accountId, accountName, workerName: target.workerName });
     }
     console.log('');
   }
@@ -1768,7 +1773,7 @@ async function main() {
     cardRow(S.cyan('2') + '  The in-panel "Update panel" button replaces this build with the author\'s;');
     cardRow('   ' + S.dim('restore yours with ') + S.cyan('node wizard.mjs --update'));
     cardRow(S.cyan('3') + '  Inside Iran, finish the custom-domain step (you can do it right now).');
-    cardRow(S.cyan('4') + '  Keep your API token private; this wizard never stores it.');
+    cardRow(S.cyan('4') + '  The API token stays on this machine (.token.json) and is never uploaded.');
     cardEnd();
   } else {
     console.log(`
@@ -1792,7 +1797,7 @@ ${line}
          build replaces this one — restore it with: node wizard.mjs --update
       3. For use inside Iran, complete the custom-domain step (you can also do it
          right now).
-      4. Keep your API token private; this wizard never stores it.
+      4. Keep your API token private; it is saved only on this machine (.token.json).
 ${line}`);
   }
 
@@ -1902,48 +1907,64 @@ async function updateMain(opts = {}) {
 
   // ---------- [1/6] token
   nextStep('Validate API token');
-  await acquireToken(rl);
+  why('A saved login is offered first — pick it by number and the token is reused.');
+  const savedLogin = await acquireToken(rl);
 
-  // ---------- [2/6] target
+  // ---------- [2/6] account + which panel
   nextStep('Confirm what to update');
-  why('The values stored in the install profile are shown and used as the defaults — press Enter to accept each.');
-  const accountId = (await ask(rl, 'Account ID', profile.accountId)).trim().toLowerCase();
-  if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('Account ID format is invalid (32 hex characters).', 'Press Enter to accept the stored Account ID.');
-  const accounts = await cf('/accounts?per_page=50');
-  if (accounts.ok && accounts.data.result && accounts.data.result.length && !accounts.data.result.some((a) => a.id === accountId)) {
-    warn('This token does not list that account id — continuing anyway.');
+  why('The account and the panel on it are picked — a saved one is reused automatically.');
+  let accountId = '';
+  let accountName = '';
+  const pickedAccount = await selectCloudflareAccount(rl, (savedLogin && savedLogin.accountId) || profile.accountId);
+  if (pickedAccount) {
+    accountId = pickedAccount.accountId;
+    accountName = pickedAccount.accountName;
+    ok('Account: ' + accountName);
+  } else {
+    warn('Could not list accounts with this token.');
+    accountId = (await ask(rl, 'Enter your Account ID manually (from the overview page of your domain/worker)', profile.accountId || '')).trim().toLowerCase();
+    if (!/^[a-f0-9]{32}$/i.test(accountId)) fail('Account ID format is invalid (32 hex characters).', 'Copy the Account ID from the Cloudflare dashboard sidebar.');
+    accountName = profile.accountName || accountId;
   }
+  saveLocalToken({ token: TOKEN, accountId, accountName, updatedAt: new Date().toISOString() });
 
-  const workerListRes = await cf(`/accounts/${accountId}/workers/scripts?per_page=100`);
-  const workerScripts = (workerListRes.ok && Array.isArray(workerListRes.data.result)) ? workerListRes.data.result : [];
-  if (workerScripts.length > 1) {
-    console.log('  Workers found in this account:');
-    workerScripts.forEach((w, i) => {
-      const isDef = w.id === profile.workerName;
-      console.log(`     ${i + 1}) ${w.id}${isDef ? '   (saved default)' : ''}`);
-    });
+  // The panel to update: the one named on the command line / chosen in the
+  // panel menu, or — when this ran from the profile alone — the saved worker,
+  // confirmed with a numbered menu of what really exists on the account.
+  let workerName = (opts.workerName || '').trim().toLowerCase();
+  const workerScripts = await fetchWorkers(accountId);
+  if (!workerName) {
+    if (workerScripts.length > 1) {
+      workerScripts.forEach((w, i) => {
+        const isDef = w.id === profile.workerName;
+        console.log(`     ${i + 1}) ${w.id}${isDef ? '   (saved default)' : ''}`);
+      });
+      const workerAns = (await ask(rl, 'Worker number to update', String(Math.max(1, workerScripts.findIndex((w) => w.id === profile.workerName) + 1)))).trim();
+      const picked = workerScripts[parseInt(workerAns, 10) - 1];
+      if (picked) workerName = picked.id;
+    } else if (workerScripts.length === 1) {
+      workerName = workerScripts[0].id;
+      ok('Panel found on this account: ' + workerName);
+    } else {
+      workerName = (await ask(rl, 'Worker name', profile.workerName || '')).trim().toLowerCase();
+    }
   }
-
-  let workerAns = (await ask(rl, 'Worker name' + (workerScripts.length > 1 ? ' (or number)' : ''), profile.workerName)).trim();
-  let workerName = workerAns;
-  if (/^\d+$/.test(workerAns)) {
-    const idx = parseInt(workerAns, 10);
-    if (workerScripts[idx - 1]) workerName = workerScripts[idx - 1].id;
-  }
-  workerName = workerName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the stored name.');
+  workerName = workerName.replace(/[^a-z0-9-]/g, '-');
+  if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Run the installer once to create a panel, or give the exact worker name.');
   const current = await workerExists(accountId, workerName);
   if (!current.ok) warn('Could not read the account script list (' + current.errors + ') — continuing.');
-  if (current.known) ok('Existing worker found: ' + workerName);
+  if (current.known) ok('Updating existing worker: ' + workerName);
   else warn('Worker "' + workerName + '" is not in this account — this update will create it.');
-  saveLocalToken({ token: TOKEN, accountId, accountName: profile.accountName || accountId, updatedAt: new Date().toISOString() });
 
   // ---------- [3/6] database
   nextStep('Re-attach the existing database');
-  why('The very same database is re-attached and its row census is compared before and after so nothing can be lost silently.');
+  why('The database the worker already has is re-attached, and its row census is compared before and after so nothing can be lost silently.');
+  // The live worker is the source of truth: read its D1 binding straight from
+  // Cloudflare, so updating a panel that was not installed from this folder
+  // still lands on the right database.
   let detectedDbName = '';
   let detectedDbId = '';
-  if (workerName !== profile.workerName) {
+  if (current.known) {
     const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
     if (st.ok && st.data.result && Array.isArray(st.data.result.bindings)) {
       const d1 = st.data.result.bindings.find((b) => b.type === 'd1');
@@ -1956,15 +1977,17 @@ async function updateMain(opts = {}) {
       }
     }
   }
-  const defaultDb = (workerName === profile.workerName ? profile.dbName : detectedDbName) || workerName + '-db';
+  const samePanel = workerName === profile.workerName;
+  const defaultDb = detectedDbName || (samePanel && profile.dbName) || workerName + '-db';
+  if (detectedDbName) ok('Database bound to this worker: ' + detectedDbName + ' (' + String(detectedDbId).slice(0, 8) + '…) — reusing it as-is');
   const dbName = (await ask(rl, 'D1 database name', defaultDb)).trim();
   let dbId = '';
   const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
   const found = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
   if (found) dbId = found.uuid;
-  else if (detectedDbId) {
+  else if (detectedDbId && dbName === detectedDbName) {
     dbId = detectedDbId;
-  } else if (profile.dbId && workerName === profile.workerName) {
+  } else if (profile.dbId && samePanel) {
     const direct = await cf(`/accounts/${accountId}/d1/database/${profile.dbId}`);
     if (direct.ok) { dbId = profile.dbId; warn('No database named "' + dbName + '" — using the saved database id instead.');}
   }
@@ -1984,21 +2007,20 @@ async function updateMain(opts = {}) {
   else warn('Row census not available with this token (D1 query) — the update never deletes data regardless.');
 
   // ---------- [4/6] source + identity
-  nextStep('Fetch the source and rebuild the identity');
+  nextStep('Fetch the source and give this update its own fingerprint');
   const src = await prepareSource(rl);
   const scan = scanKeywords(src.path);
   if (scan.hits > 0) fail('Source still has ' + scan.hits + ' lines with identifiable keywords!');
   ok('Source ready: ' + (scan.size / 1024).toFixed(0) + 'KB, zero identifiable keywords');
+  // An update is a fresh deployment, so it gets a brand-new build identity the
+  // same way an install does — a new key, row order and generated names — while
+  // the database, its rows, the address and any domain stay exactly as they are.
   let seed = null;
   if (noFingerprint) {
     warn('--no-fingerprint: deploying the shared repository build.');
-  } else if (profile.fingerprint && profile.seed) {
-    seed = rotate ? newSeed() : profile.seed;
-    if (rotate) console.log('  --rotate: this panel gets a brand-new build identity.');
-    else console.log('  Keeping this panel\'s existing build identity.');
   } else {
-    const add = await ask(rl, 'This panel has no private build identity yet — add one now? (y/n)', 'y');
-    if (add.toLowerCase() === 'y') seed = newSeed();
+    seed = newSeed();
+    console.log('  This update gets its own build identity (new key, row order and names)' + (rotate ? ' — --rotate was given.' : '.'));
   }
   const build = seed ? fingerprint(src.path, seed) : { path: src.path, names: null, rows: 0 };
 
@@ -2022,20 +2044,22 @@ async function updateMain(opts = {}) {
   if (COLOR) {
     cardTop('🔄 Update complete  ·  ' + elapsed() + ' total');
     cardRow();
-    cardRow(S.dim('same database, same address, freshly rebuilt bytes'));
+    cardRow(S.dim('same database, same address, a brand-new build identity'));
     cardRow('   ' + S.cyan(S.under(url)));
     cardRow('   ' + (health.ok ? S.green('responding now ✔') : S.yellow('not answered from this machine yet') + S.dim(' (a filtered network or route propagation;')));
     if (!health.ok) cardRow('   ' + S.dim(' the deploy itself was verified byte for byte)'));
     cardRow();
-    cardRow(build.names ? S.dim('build identity kept: ') + Object.values(build.names).slice(0, 2).join(', ') + ' …' : S.dim('shared repository build deployed'));
+    cardRow(build.names ? S.dim('new build identity: ') + Object.values(build.names).slice(0, 2).join(', ') + ' …' : S.dim('shared repository build deployed'));
+    cardRow(S.dim('worker script replaced — database, rows, address and domains untouched'));
     cardEnd();
   } else {
     console.log(`
 ${line}
-  🔄 Update complete — same database, same address, freshly rebuilt bytes:
+  🔄 Update complete — same database, same address, a brand-new build identity:
         ${url}
         ${health.ok ? 'responding now ✔' : 'not answered from this machine yet (a filtered network or route propagation; the deploy itself was verified byte for byte)'}
-      ${build.names ? 'Build identity kept for this panel: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
+      ${build.names ? 'New build identity: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
+      Worker script replaced; the database, its rows, the address and any domains were never touched.
 ${line}`);
   }
   const finalSeed = (health.rebuilt && health.rebuilt.seed) || seed || profile.seed;
@@ -2127,13 +2151,17 @@ ${line}
       node wizard.mjs --help          this help
       node wizard.mjs --doctor        diagnose a deployed worker (read-only)
 
+    Menus: saved logins are listed first (pick one by number and its token is
+    reused from .token.json), then the account, then every panel on that
+    account — so an update is a few digits and Enter.
+
     Environment:
       ZEUS_CF_TOKEN       read the API token from the env instead of typing it
       ZEUS_PROBE_WAIT_MS  how long the final address check waits for propagation (default 90000)
       ZEUS_PROBE_URL      custom address for the final health check (used by tests)
       ZEUS_SETTLE_MS      calm wait between verified upload and the first check (default 10000 for a new worker, 5000 otherwise)
 
-    Safety: your token is never stored or printed — it always shows as ••••••••.
+    Safety: your token is saved only on this machine (.token.json) and never printed — it always shows as ••••••••.
 ${line}`;
 }
 
@@ -2142,8 +2170,8 @@ function helpStyled() {
   cardTop('⚡ ZEUS  ·  Install Wizard  ·  help');
   cardRow(S.bold('Usage') + S.dim('   node wizard.mjs [option]'));
   cardSep();
-  cmd('(no option)', 'full interactive install');
-  cmd('--update', 'update with the saved defaults');
+  cmd('(no option)', 'install or update — pick from the menus');
+  cmd('--update', 'update a panel (saved login, account and worker)');
   cmd('--doctor [worker]', 'diagnose a deployed worker (read-only)');
   cmd('--token-link', 'only print the token-creation link');
   cmd('--rotate', 'mint a brand-new build identity');
@@ -2153,6 +2181,11 @@ function helpStyled() {
   cmd('--no-color', 'plain output (NO_COLOR works too)');
   cmd('--help', 'this help');
   cardSep();
+  cardRow(S.bold('How the menus work'));
+  cardRow(S.dim('Saved logins are listed first — pick one by number and the token is'));
+  cardRow(S.dim('reused from .token.json. The account, then every panel on it, follow as'));
+  cardRow(S.dim('their own numbered menus, so an update is a few digits and Enter.'));
+  cardSep();
   cardRow(S.bold('Environment'));
   cmd('ZEUS_CF_TOKEN', 'read the API token from the env instead of typing it');
   cmd('ZEUS_PROBE_WAIT_MS', 'how long the final check waits (default 90000)');
@@ -2161,7 +2194,7 @@ function helpStyled() {
   cmd('ZEUS_NO_PREWARM=1', 'skip the first-install route priming');
   cmd('FORCE_COLOR=1', 'keep colours even when piped');
   cardSep();
-  cardRow('🔒 ' + S.dim('Your token is never stored or printed — it always shows as ••••••••.'));
+  cardRow('🔒 ' + S.dim('Your token is saved only on this machine (.token.json) and never printed — it always shows as ••••••••.'));
   cardEnd();
 }
 
