@@ -794,10 +794,10 @@ try {
       savedAt: '2026-01-01T00:00:00.000Z'
     }));
     const { server, state, port } = await startMock();
-    const r = await run(root, port, ['--test-saved-token'], ['y', '', 'n']);
+    const r = await run(root, port, ['--test-saved-token'], ['1', '', 'n']);
     check(!r.fatal && r.code === 0, 'S26 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('Axion Custom Account'), 'S26 output shows the saved account name');
-    check(r.out.includes('Use this saved token'), 'S26 asks whether to use the saved token');
+    check(r.out.includes('Saved Cloudflare accounts') || r.out.includes('Saved accounts') || r.out.includes('Select account'), 'S26 lists saved accounts');
     check(r.out.includes('Token is valid (account: Axion Custom Account)'), 'S26 reused the saved token');
     check(r.out.includes('Install complete'), 'S26 install finished using saved token');
     server.close();
@@ -815,11 +815,31 @@ try {
       savedAt: '2026-01-01T00:00:00.000Z'
     }));
     const { server, state, port } = await startMock();
-    const r = await run(root, port, ['--test-saved-token'], ['n', TOKEN, '', 'n']);
+    const r = await run(root, port, ['--test-saved-token'], ['2', TOKEN, '', 'n']);
     check(!r.fatal && r.code === 0, 'S26b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('Declined Account'), 'S26b mentions saved account');
     check(r.out.includes('Token is valid'), 'S26b validated new token');
     check(r.out.includes('Install complete'), 'S26b install finished');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S26c select from multiple saved accounts
+  console.log('• S26c wizard allows numbered selection when multiple accounts are saved');
+  {
+    rmSync(profPath, { force: true });
+    writeFileSync(tokenPath, JSON.stringify({
+      tokens: [
+        { token: 'token-one', accountId: 'acc1'.padEnd(32, '0'), accountName: 'First Account' },
+        { token: TOKEN, accountId: ACCOUNT_ID, accountName: 'Second Target Account' }
+      ]
+    }));
+    const { server, state, port } = await startMock();
+    const r = await run(root, port, ['--test-saved-token'], ['2', '', 'n']);
+    check(!r.fatal && r.code === 0, 'S26c exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('First Account') && r.out.includes('Second Target Account'), 'S26c lists both saved accounts');
+    check(r.out.includes('Token is valid (account: Second Target Account)'), 'S26c selected account 2 via number');
+    check(r.out.includes('Install complete'), 'S26c install finished');
     server.close();
     console.log('');
   }

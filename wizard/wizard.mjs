@@ -790,20 +790,30 @@ function tokenFromEnv() {
 
 const TOKEN_PATH = join(__dirname, '.token.json');
 
-function loadSavedToken() {
-  if (!existsSync(TOKEN_PATH)) return null;
+function loadSavedTokens() {
+  if (!existsSync(TOKEN_PATH)) return [];
   try {
-    const data = JSON.parse(readFileSync(TOKEN_PATH, 'utf8'));
-    if (data && typeof data.token === 'string' && data.token.trim()) return data;
+    const raw = JSON.parse(readFileSync(TOKEN_PATH, 'utf8'));
+    let list = [];
+    if (Array.isArray(raw)) list = raw;
+    else if (raw && Array.isArray(raw.tokens)) list = raw.tokens;
+    else if (raw && typeof raw.token === 'string' && raw.token.trim()) list = [raw];
+    return list.filter((t) => t && typeof t.token === 'string' && t.token.trim());
   } catch {}
-  return null;
+  return [];
 }
 
 function saveLocalToken(data) {
+  if (!data || !data.token) return false;
   try {
-    const prev = loadSavedToken() || {};
-    const merged = { ...prev, ...data };
-    writeFileSync(TOKEN_PATH, JSON.stringify(merged, null, 1) + '\n');
+    const list = loadSavedTokens();
+    const idx = list.findIndex((x) => (data.accountId && x.accountId === data.accountId) || x.token === data.token);
+    if (idx !== -1) {
+      list[idx] = { ...list[idx], ...data };
+    } else {
+      list.push(data);
+    }
+    writeFileSync(TOKEN_PATH, JSON.stringify({ tokens: list }, null, 1) + '\n');
     return true;
   } catch {}
   return false;
@@ -820,27 +830,47 @@ async function acquireToken(rl, tokenUrl) {
     return;
   }
 
-  const saved = loadSavedToken();
+  const savedList = loadSavedTokens();
   const allowSavedPrompt = !pipedLines || process.argv.includes('--test-saved-token');
-  if (allowSavedPrompt && saved && saved.token) {
-    const accLabel = saved.accountName || 'Cloudflare Account';
+  if (allowSavedPrompt && savedList.length > 0) {
+    const newIdx = savedList.length + 1;
     if (COLOR) {
       cardTop('🔑 Cloudflare API token');
-      cardRow(S.dim('Saved token found for account: ') + S.bold(accLabel));
-      cardRow(S.dim('token    ') + S.cyan('••••••••') + S.dim(' (saved locally in .token.json)'));
+      cardRow(S.dim('Saved accounts:'));
+      savedList.forEach((acc, i) => {
+        const label = acc.accountName || acc.accountId || ('Account #' + (i + 1));
+        cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(label) + S.dim('  (••••••••)'));
+      });
+      cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.dim('Enter a new Cloudflare API token'));
       cardEnd();
     } else {
-      console.log(`\n  Saved Cloudflare API token found for account: ${accLabel}`);
+      console.log('\n  Saved Cloudflare accounts:');
+      savedList.forEach((acc, i) => {
+        const label = acc.accountName || acc.accountId || ('Account #' + (i + 1));
+        console.log(`     ${i + 1}) ${label}  (••••••••)`);
+      });
+      console.log(`     ${newIdx}) Enter a new Cloudflare API token\n`);
     }
-    const ans = (await ask(rl, `Use this saved token for "${accLabel}"? (y/n)`, 'y')).trim().toLowerCase();
-    if (ans === 'y' || ans === 'yes' || ans === '') {
-      TOKEN = saved.token;
+
+    const choice = (await ask(rl, `Select account (1-${newIdx})`, '1')).trim().toLowerCase();
+    let pickedIdx = -1;
+    if (choice === '' || choice === '1' || choice === 'y' || choice === 'yes') {
+      pickedIdx = 0;
+    } else if (/^\d+$/.test(choice)) {
+      const n = parseInt(choice, 10);
+      if (n >= 1 && n <= savedList.length) pickedIdx = n - 1;
+    }
+
+    if (pickedIdx >= 0) {
+      const picked = savedList[pickedIdx];
+      const accLabel = picked.accountName || picked.accountId || 'Cloudflare Account';
+      TOKEN = picked.token;
       const verify = await cf('/user/tokens/verify');
       if (verify.ok) {
         ok('Token is valid (account: ' + accLabel + ')' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
         return;
       }
-      warn('The saved token is no longer valid (' + verify.errors + ') — please enter a new token.');
+      warn('The saved token for "' + accLabel + '" is no longer valid (' + verify.errors + ') — please enter a new token.');
     }
   }
 
