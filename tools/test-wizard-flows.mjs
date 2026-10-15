@@ -50,7 +50,7 @@ const check = (cond, label, extra) => {
 // ------------------------------------------------------------------ mock CF API
 function startMock(opt = {}) {
   const state = {
-    scripts: {},           // name -> { bytes, metadata }
+    scripts: opt.scripts ? { ...opt.scripts } : {}, // name -> { bytes, metadata }
     puts: [],              // every script PUT
     deletes: [],           // every DELETE path
     requests: [],          // every {method,path}
@@ -840,6 +840,40 @@ try {
     check(r.out.includes('First Account') && r.out.includes('Second Target Account'), 'S26c lists both saved accounts');
     check(r.out.includes('Token is valid (account: Second Target Account)'), 'S26c selected account 2 via number');
     check(r.out.includes('Install complete'), 'S26c install finished');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S27 live Cloudflare panels menu (Update existing panel)
+  console.log('• S27 wizard detects existing panels on selected account and offers update');
+  {
+    rmSync(profPath, { force: true });
+    rmSync(tokenPath, { force: true });
+    const { server, state, port } = await startMock({
+      scripts: { 'my-active-panel': { bytes: Buffer.from(CANON), metadata: null } },
+      dbs: [{ name: 'my-active-panel-db', uuid: DB_UUID }],
+    });
+    const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '1', '', '', '', 'n']);
+    check(!r.fatal && r.code === 0, 'S27 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Existing panels on this account') && r.out.includes('my-active-panel'), 'S27 lists live workers on the account');
+    check(r.out.includes('Update complete'), 'S27 successfully routed to update');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S27b deploy new panel when existing panels exist
+  console.log('• S27b wizard allows choosing "+ Deploy a new panel" on account with existing panels');
+  {
+    rmSync(profPath, { force: true });
+    rmSync(tokenPath, { force: true });
+    const { server, state, port } = await startMock({
+      scripts: { 'first-panel': { bytes: Buffer.from(CANON), metadata: null } },
+    });
+    const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '2', '', 'n']);
+    check(!r.fatal && r.code === 0, 'S27b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('first-panel'), 'S27b displays existing panel');
+    check(r.out.includes('Deploy a new panel'), 'S27b offers deploy new panel option');
+    check(r.out.includes('Install complete'), 'S27b successfully installed fresh panel');
     server.close();
     console.log('');
   }

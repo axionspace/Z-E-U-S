@@ -820,6 +820,11 @@ function saveLocalToken(data) {
 }
 
 async function acquireToken(rl, tokenUrl) {
+  if (TOKEN) {
+    const verify = await cf('/user/tokens/verify');
+    if (verify.ok) return;
+  }
+
   const envTok = tokenFromEnv();
   if (envTok) {
     TOKEN = envTok;
@@ -1482,7 +1487,7 @@ async function main() {
 
   // Saved defaults from an earlier run in this folder (identity + account + worker + D1)
   const profile = loadProfile() || {};
-  const wantMenu = process.argv.includes('--menu') || (!pipedLines && profile && profile.workerName && !process.argv.includes('--install'));
+  const wantMenu = process.argv.includes('--menu');
   if (wantMenu && profile && profile.workerName && !process.argv.includes('--install')) {
     if (COLOR) {
       cardTop('⚡ ZEUS  ·  Existing installation found');
@@ -1555,6 +1560,48 @@ async function main() {
     ok('Account: ' + accountName);
   }
   saveLocalToken({ token: TOKEN, accountId, accountName, updatedAt: new Date().toISOString() });
+
+  // Live Cloudflare check: look up existing worker scripts/panels on this account
+  const listRes = await cf(`/accounts/${accountId}/workers/scripts?per_page=100`);
+  const existingWorkers = (listRes.ok && Array.isArray(listRes.data.result)) ? listRes.data.result : [];
+  const wantExistingPanelsMenu = !process.argv.includes('--install') && (!pipedLines || process.argv.includes('--test-panels-menu')) && existingWorkers.length > 0;
+  if (wantExistingPanelsMenu) {
+    const newIdx = existingWorkers.length + 1;
+    if (COLOR) {
+      cardTop('⚡ ZEUS  ·  Existing panels on this account');
+      cardRow(S.dim('Found ' + existingWorkers.length + ' panel(s) in ') + S.bold(accountName));
+      cardSep();
+      existingWorkers.forEach((w, i) => {
+        cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold('Update "' + w.id + '"') + S.dim(' (preserves database & settings)'));
+      });
+      cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.bold('+ Deploy a new panel') + S.dim(' (fresh worker & new database)'));
+      cardEnd();
+    } else {
+      console.log(`\n  Existing panels on this account (${accountName}):`);
+      existingWorkers.forEach((w, i) => {
+        console.log(`     ${i + 1}) Update "${w.id}" (preserves database & settings)`);
+      });
+      console.log(`     ${newIdx}) + Deploy a new panel (fresh worker & new database)\n`);
+    }
+
+    const choiceRaw = (await ask(rl, `Select an action (1-${newIdx})`, '1')).trim().toLowerCase();
+    let chosenIdx = -1;
+    if (choiceRaw === '' || choiceRaw === '1') {
+      chosenIdx = 0;
+    } else if (/^\d+$/.test(choiceRaw)) {
+      const num = parseInt(choiceRaw, 10);
+      if (num >= 1 && num <= existingWorkers.length) {
+        chosenIdx = num - 1;
+      }
+    }
+
+    if (chosenIdx >= 0) {
+      const targetWorker = existingWorkers[chosenIdx].id;
+      cleanup();
+      return updateMain({ accountId, workerName: targetWorker, accountName });
+    }
+    console.log('');
+  }
 
   // ---------- [3/10] worker name
   nextStep('Worker name');
@@ -1825,11 +1872,22 @@ async function prepareOnlyMain() {
 // Re-deploys the panel with the values saved in the install profile: token → target →
 // database → source → identity → upload. Nothing is deleted anywhere in this flow; the
 // same D1 database is re-attached and a read-only row census proves the data survived.
-async function updateMain() {
+async function updateMain(opts = {}) {
   totalSteps = 6;
   step = 0;
-  const profile = loadProfile();
-  if (!profile) {
+  const loaded = loadProfile();
+  const profile = loaded || {
+    accountId: opts.accountId || '',
+    accountName: opts.accountName || '',
+    workerName: opts.workerName || '',
+    seed: newSeed(),
+    fingerprint: true,
+  };
+  if (opts.workerName) profile.workerName = opts.workerName;
+  if (opts.accountId) profile.accountId = opts.accountId;
+  if (opts.accountName) profile.accountName = opts.accountName;
+
+  if (!profile.workerName && !loaded) {
     fail('No install profile was found in this folder — --update works on an install made by this wizard.',
       'Run the full install once (node wizard.mjs) with the same worker name; it reuses an existing database.');
   }
