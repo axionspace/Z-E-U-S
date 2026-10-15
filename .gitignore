@@ -7,6 +7,8 @@
 
 # --- never publish these: they hold live account ids / database uuids -------------
 **/profile.json
+**/.token.json
+**/.token*
 *.log
 audit-*.log
 sweep-*.log

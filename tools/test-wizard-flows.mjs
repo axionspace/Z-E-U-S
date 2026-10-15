@@ -248,6 +248,7 @@ function run(dir, port, args, answers) {
 
 const root = mkdtempSync(join(tmpdir(), 'zeus-flows-'));
 const profPath = join(root, 'wizard', 'profile.json');
+const tokenPath = join(root, 'wizard', '.token.json');
 const readProf = () => (existsSync(profPath) ? JSON.parse(readFileSync(profPath, 'utf8')) : null);
 console.log('Wizard flow regression test (mock Cloudflare API)\ntemp dir: ' + root + '\n');
 
@@ -778,6 +779,47 @@ try {
     check(!r.fatal && r.code === 0, 'S25 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('Existing installation found') || r.out.includes('Update panel'), 'S25 prompt offers update option');
     check(r.out.includes('Update complete'), 'S25 update completed successfully');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S26 saved local token reuse
+  console.log('• S26 wizard reuses locally saved token with account name confirmation');
+  {
+    rmSync(profPath, { force: true });
+    writeFileSync(tokenPath, JSON.stringify({
+      token: TOKEN,
+      accountId: ACCOUNT_ID,
+      accountName: 'Axion Custom Account',
+      savedAt: '2026-01-01T00:00:00.000Z'
+    }));
+    const { server, state, port } = await startMock();
+    const r = await run(root, port, ['--test-saved-token'], ['y', '', 'n']);
+    check(!r.fatal && r.code === 0, 'S26 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Axion Custom Account'), 'S26 output shows the saved account name');
+    check(r.out.includes('Use this saved token'), 'S26 asks whether to use the saved token');
+    check(r.out.includes('Token is valid (account: Axion Custom Account)'), 'S26 reused the saved token');
+    check(r.out.includes('Install complete'), 'S26 install finished using saved token');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S26b enter different token
+  console.log('• S26b wizard allows entering a different token when saved token is declined');
+  {
+    rmSync(profPath, { force: true });
+    writeFileSync(tokenPath, JSON.stringify({
+      token: 'old-expired-token',
+      accountId: ACCOUNT_ID,
+      accountName: 'Declined Account',
+      savedAt: '2026-01-01T00:00:00.000Z'
+    }));
+    const { server, state, port } = await startMock();
+    const r = await run(root, port, ['--test-saved-token'], ['n', TOKEN, '', 'n']);
+    check(!r.fatal && r.code === 0, 'S26b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Declined Account'), 'S26b mentions saved account');
+    check(r.out.includes('Token is valid'), 'S26b validated new token');
+    check(r.out.includes('Install complete'), 'S26b install finished');
     server.close();
     console.log('');
   }

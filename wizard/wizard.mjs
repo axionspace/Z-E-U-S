@@ -788,6 +788,69 @@ function tokenFromEnv() {
   return (process.env.ZEUS_CF_TOKEN || '').trim();
 }
 
+const TOKEN_PATH = join(__dirname, '.token.json');
+
+function loadSavedToken() {
+  if (!existsSync(TOKEN_PATH)) return null;
+  try {
+    const data = JSON.parse(readFileSync(TOKEN_PATH, 'utf8'));
+    if (data && typeof data.token === 'string' && data.token.trim()) return data;
+  } catch {}
+  return null;
+}
+
+function saveLocalToken(data) {
+  try {
+    const prev = loadSavedToken() || {};
+    const merged = { ...prev, ...data };
+    writeFileSync(TOKEN_PATH, JSON.stringify(merged, null, 1) + '\n');
+    return true;
+  } catch {}
+  return false;
+}
+
+async function acquireToken(rl, tokenUrl) {
+  const envTok = tokenFromEnv();
+  if (envTok) {
+    TOKEN = envTok;
+    ok('API token read from the ZEUS_CF_TOKEN environment variable.');
+    const verify = await cf('/user/tokens/verify');
+    if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions.');
+    ok('Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
+    return;
+  }
+
+  const saved = loadSavedToken();
+  const allowSavedPrompt = !pipedLines || process.argv.includes('--test-saved-token');
+  if (allowSavedPrompt && saved && saved.token) {
+    const accLabel = saved.accountName || 'Cloudflare Account';
+    if (COLOR) {
+      cardTop('🔑 Cloudflare API token');
+      cardRow(S.dim('Saved token found for account: ') + S.bold(accLabel));
+      cardRow(S.dim('token    ') + S.cyan('••••••••') + S.dim(' (saved locally in .token.json)'));
+      cardEnd();
+    } else {
+      console.log(`\n  Saved Cloudflare API token found for account: ${accLabel}`);
+    }
+    const ans = (await ask(rl, `Use this saved token for "${accLabel}"? (y/n)`, 'y')).trim().toLowerCase();
+    if (ans === 'y' || ans === 'yes' || ans === '') {
+      TOKEN = saved.token;
+      const verify = await cf('/user/tokens/verify');
+      if (verify.ok) {
+        ok('Token is valid (account: ' + accLabel + ')' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
+        return;
+      }
+      warn('The saved token is no longer valid (' + verify.errors + ') — please enter a new token.');
+    }
+  }
+
+  if (tokenUrl) tokenGuide(tokenUrl);
+  TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
+  const verify = await cf('/user/tokens/verify');
+  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions and paste it here.');
+  ok('Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
+}
+
 // ------------------------------------------------------------- fingerprint + upload
 function fingerprint(srcPath, seed) {
   const txt = readFileSync(srcPath, 'utf8');
@@ -1438,17 +1501,7 @@ async function main() {
   nextStep('Validate API token');
   why('It prints a pre-filled token-creation link, then takes your token and verifies it.');
   const tokenUrl = makeTokenUrl();
-  tokenGuide(tokenUrl);
-  const envTok = tokenFromEnv();
-  if (envTok) {
-    TOKEN = envTok;
-    ok('API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
-  } else {
-    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
-  }
-  const verify = await cf('/user/tokens/verify');
-  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions and paste it here.');
-  ok('Token is valid' + (verify.data.result?.status ? ` (status: ${verify.data.result.status})` : ''));
+  await acquireToken(rl, tokenUrl);
 
   // ---------- [2/10] account
   nextStep('Select account');
@@ -1471,6 +1524,7 @@ async function main() {
     accountId = picked.id; accountName = picked.name;
     ok('Account: ' + accountName);
   }
+  saveLocalToken({ token: TOKEN, accountId, accountName, updatedAt: new Date().toISOString() });
 
   // ---------- [3/10] worker name
   nextStep('Worker name');
@@ -1760,16 +1814,7 @@ async function updateMain() {
 
   // ---------- [1/6] token
   nextStep('Validate API token');
-  const envTok = tokenFromEnv();
-  if (envTok) {
-    TOKEN = envTok;
-    ok('API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
-  } else {
-    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
-  }
-  const verify = await cf('/user/tokens/verify');
-  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions.');
-  ok('Token is valid');
+  await acquireToken(rl);
 
   // ---------- [2/6] target
   nextStep('Confirm what to update');
@@ -1803,6 +1848,7 @@ async function updateMain() {
   if (!current.ok) warn('Could not read the account script list (' + current.errors + ') — continuing.');
   if (current.known) ok('Existing worker found: ' + workerName);
   else warn('Worker "' + workerName + '" is not in this account — this update will create it.');
+  saveLocalToken({ token: TOKEN, accountId, accountName: profile.accountName || accountId, updatedAt: new Date().toISOString() });
 
   // ---------- [3/6] database
   nextStep('Re-attach the existing database');
@@ -2049,16 +2095,7 @@ async function doctorMain() {
     cardEnd();
     console.log('');
   } else console.log('Doctor mode: read-only diagnosis, nothing is changed or deleted\n');
-  const envTok = tokenFromEnv();
-  if (envTok) {
-    TOKEN = envTok;
-    console.log('  API token read from the ZEUS_CF_TOKEN environment variable (not stored anywhere).');
-  } else {
-    TOKEN = await askSecret(rl, 'Enter your Cloudflare API token');
-  }
-  const verify = await cf('/user/tokens/verify');
-  if (!verify.ok) fail('Token is not valid (' + verify.errors + ')', 'Create the token again with the listed permissions.');
-  ok('Token is valid');
+  await acquireToken(rl);
   let accountId = profile.accountId || '';
   if (!accountId) {
     const accounts = await cf('/accounts?per_page=50');
