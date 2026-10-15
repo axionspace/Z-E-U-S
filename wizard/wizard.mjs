@@ -1130,6 +1130,34 @@ async function workerExists(accountId, name) {
   return { ok: true, known: !!found, script: found || null };
 }
 
+// Read the D1 database a worker is already bound to, straight from Cloudflare.
+// This is what makes database detection automatic: whatever the panel was
+// deployed with, its own binding is the source of truth — no name guessing and
+// no prompt needed. Returns null when the worker has no D1 binding at all.
+async function readWorkerD1(accountId, workerName) {
+  const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+  if (!st.ok || !st.data.result || !Array.isArray(st.data.result.bindings)) return null;
+  const d1 = st.data.result.bindings.find((b) => b && b.type === 'd1');
+  if (!d1) return null;
+  const id = d1.id || d1.database_id || '';
+  if (!id) return null;
+  const dl = await cf(`/accounts/${accountId}/d1/database/${id}`);
+  const name = (dl.ok && dl.data.result && dl.data.result.name) || '';
+  return { dbId: id, dbName: name, bindingName: d1.name || 'DB' };
+}
+
+// The database an install should use for a worker name: the one the worker is
+// already bound to if it exists, otherwise the conventional "<worker>-db".
+async function detectDatabaseFor(accountId, workerName) {
+  const bound = await readWorkerD1(accountId, workerName);
+  if (bound) return { ...bound, source: 'worker' };
+  const conventional = workerName + '-db';
+  const list = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(conventional)}`);
+  const hit = list.ok && (list.data.result || []).find((d) => d.name === conventional);
+  if (hit) return { dbId: hit.uuid, dbName: hit.name, bindingName: 'DB', source: 'name' };
+  return null;
+}
+
 // Read the script back from Cloudflare so the deployed bytes can be compared with the
 // build that was just produced (the multipart endpoint returns worker.js verbatim).
 async function deployedBytes(accountId, name) {
@@ -1635,38 +1663,51 @@ async function main() {
   warn('Note: workers.dev is blocked in Iran; attach a custom domain for use inside Iran (final step).');
 
   // ---------- [5/10] D1
-  nextStep('Create D1 database');
-  why('The panel keeps every user and setting in one D1 database; an existing one is reused, never replaced or deleted.');
-  let dbName = workerName + '-db';
+  // The database is detected automatically. If this worker name already exists,
+  // its own D1 binding is read from Cloudflare and reused — that covers both an
+  // overwrite of an existing panel and any panel whose database was renamed. Only
+  // when nothing is bound does the wizard fall back to the "<worker>-db" name.
+  nextStep('D1 database');
+  why('The database is detected automatically: an existing worker\'s own binding is reused, otherwise the conventional name is created. Nothing is ever deleted.');
+  let dbName = '';
   let dbId = '';
-  const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
-  const existing = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
-  if (existing) {
-    dbId = existing.uuid;
-    ok('Using existing database: ' + dbName + ' (' + dbId.slice(0, 8) + '...)');
+  const detected = await detectDatabaseFor(accountId, workerName);
+  if (detected && detected.dbId) {
+    dbId = detected.dbId;
+    dbName = detected.dbName || workerName + '-db';
+    ok('Detected automatically — this worker is already bound to ' + dbName + ' (' + String(dbId).slice(0, 8) + '…)');
+    console.log('     reusing it as-is; every row it holds stays exactly as it is');
   } else {
-    const created = await cf(`/accounts/${accountId}/d1/database`, { method: 'POST', body: { name: dbName } });
-    if (!created.ok) {
-      // Accounts hit a hard cap on databases (CF error 7406) after repeated installs;
-      // reusing an existing database is the way through that, never deleting anything.
-      if (!/7406|limit/i.test(created.errors)) {
-        fail('D1 database creation failed (' + created.errors + ')', 'Make sure the token has D1/Edit access and your account has D1 (the free plan includes it).');
-      }
-      warn('The account is at its D1 database limit (' + created.errors + ').');
-      const all = await cf(`/accounts/${accountId}/d1/database?per_page=50`);
-      const free = (all.ok && all.data.result) || [];
-      if (!free.length) fail('There is no database available to reuse.', 'Delete an old test database in the dashboard, then run this wizard again.');
-      console.log('  Existing databases in this account (nothing is deleted by this wizard):');
-      free.forEach((d, i) => console.log(`     ${i + 1}) ${d.name}`));
-      const pick = await ask(rl, 'Reuse which database number? (press Enter to stop here)', '');
-      const chosen = pick ? free[parseInt(pick, 10) - 1] : null;
-      if (!chosen) fail('No database chosen — the install stopped before any change.', 'Free a D1 slot in the dashboard and run the wizard again.');
-      dbId = chosen.uuid;
-      dbName = chosen.name;
-      warn('Reusing ' + dbName + ' (' + String(dbId).slice(0, 8) + '…) — anything it already holds stays as it is.');
+    dbName = workerName + '-db';
+    const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
+    const existing = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
+    if (existing) {
+      dbId = existing.uuid;
+      ok('Using existing database: ' + dbName + ' (' + dbId.slice(0, 8) + '...)');
     } else {
-      dbId = created.data.result.uuid;
-      ok('Database created: ' + dbName);
+      const created = await cf(`/accounts/${accountId}/d1/database`, { method: 'POST', body: { name: dbName } });
+      if (!created.ok) {
+        // Accounts hit a hard cap on databases (CF error 7406) after repeated installs;
+        // reusing an existing database is the way through that, never deleting anything.
+        if (!/7406|limit/i.test(created.errors)) {
+          fail('D1 database creation failed (' + created.errors + ')', 'Make sure the token has D1/Edit access and your account has D1 (the free plan includes it).');
+        }
+        warn('The account is at its D1 database limit (' + created.errors + ').');
+        const all = await cf(`/accounts/${accountId}/d1/database?per_page=50`);
+        const free = (all.ok && all.data.result) || [];
+        if (!free.length) fail('There is no database available to reuse.', 'Delete an old test database in the dashboard, then run this wizard again.');
+        console.log('  Existing databases in this account (nothing is deleted by this wizard):');
+        free.forEach((d, i) => console.log(`     ${i + 1}) ${d.name}`));
+        const pick = await ask(rl, 'Reuse which database number? (press Enter to stop here)', '');
+        const chosen = pick ? free[parseInt(pick, 10) - 1] : null;
+        if (!chosen) fail('No database chosen — the install stopped before any change.', 'Free a D1 slot in the dashboard and run the wizard again.');
+        dbId = chosen.uuid;
+        dbName = chosen.name;
+        warn('Reusing ' + dbName + ' (' + String(dbId).slice(0, 8) + '…) — anything it already holds stays as it is.');
+      } else {
+        dbId = created.data.result.uuid;
+        ok('Database created: ' + dbName);
+      }
     }
   }
   await ensureD1Ready(accountId, dbId, dbName);
@@ -1965,31 +2006,28 @@ async function updateMain(opts = {}) {
   let detectedDbName = '';
   let detectedDbId = '';
   if (current.known) {
-    const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
-    if (st.ok && st.data.result && Array.isArray(st.data.result.bindings)) {
-      const d1 = st.data.result.bindings.find((b) => b.type === 'd1');
-      if (d1) {
-        detectedDbId = d1.id || d1.database_id || '';
-        if (detectedDbId) {
-          const dl = await cf(`/accounts/${accountId}/d1/database/${detectedDbId}`);
-          if (dl.ok && dl.data.result && dl.data.result.name) detectedDbName = dl.data.result.name;
-        }
-      }
+    const bound = await readWorkerD1(accountId, workerName);
+    if (bound) {
+      detectedDbId = bound.dbId;
+      detectedDbName = bound.dbName || '';
     }
   }
   const samePanel = workerName === profile.workerName;
   const defaultDb = detectedDbName || (samePanel && profile.dbName) || workerName + '-db';
-  if (detectedDbName) ok('Database bound to this worker: ' + detectedDbName + ' (' + String(detectedDbId).slice(0, 8) + '…) — reusing it as-is');
-  const dbName = (await ask(rl, 'D1 database name', defaultDb)).trim();
-  let dbId = '';
-  const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
-  const found = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
-  if (found) dbId = found.uuid;
-  else if (detectedDbId && dbName === detectedDbName) {
-    dbId = detectedDbId;
-  } else if (profile.dbId && samePanel) {
-    const direct = await cf(`/accounts/${accountId}/d1/database/${profile.dbId}`);
-    if (direct.ok) { dbId = profile.dbId; warn('No database named "' + dbName + '" — using the saved database id instead.');}
+  let dbName = defaultDb;
+  let dbId = detectedDbId;
+  if (detectedDbName && detectedDbId) {
+    // Detected automatically from the worker's own binding: nothing to ask.
+    ok('Detected automatically — this worker is bound to ' + detectedDbName + ' (' + String(detectedDbId).slice(0, 8) + '…); reusing it as-is');
+  } else {
+    dbName = (await ask(rl, 'D1 database name', defaultDb)).trim();
+    const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
+    const found = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
+    if (found) dbId = found.uuid;
+    else if (profile.dbId && samePanel) {
+      const direct = await cf(`/accounts/${accountId}/d1/database/${profile.dbId}`);
+      if (direct.ok) { dbId = profile.dbId; warn('No database named "' + dbName + '" — using the saved database id instead.');}
+    }
   }
   if (!dbId) {
     const make = await ask(rl, `Database "${dbName}" is missing; create it empty? (y/n)`, 'n');

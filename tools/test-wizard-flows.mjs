@@ -359,6 +359,9 @@ try {
       check(REQUIRED_COMPAT_FLAGS.every((f) => (put.metadata.compatibility_flags || []).includes(f)), 'S3 the required compat flags are present', JSON.stringify(put.metadata.compatibility_flags));
       check(r.out.includes('compatibility date upgraded 2025-01-01'), 'S3 the upgrade is announced');
     }
+    // The database is read from the worker's own binding, so no name was asked for.
+    check(r.out.includes('Detected automatically — this worker is bound to web-mock-db'), 'S3 detects the D1 binding automatically');
+    check(!r.out.includes('D1 database name ['), 'S3 never asks for the database name when it can detect it');
     const prof = readProf();
     check(!!prof && prof.seed !== prof0.seed && /^[0-9a-f]{32}$/.test(prof.seed), 'S3 identity seed rotated on update', prof0.seed + ' -> ' + (prof && prof.seed));
     check(!!prof && prof.updatedAt !== prof0.updatedAt && prof.installedAt === prof0.installedAt, 'S3 refreshed updatedAt only');
@@ -892,7 +895,7 @@ try {
     // A panel found straight from Cloudflare (never installed from this folder) still
     // gets a fresh identity, and its own live D1 binding is what gets re-attached.
     check(r.out.includes('This update gets its own build identity'), 'S27 the chosen panel gets a fresh identity');
-    check(r.out.includes('Database bound to this worker'), 'S27 reads the live D1 binding from the worker');
+    check(r.out.includes('Detected automatically — this worker is bound to my-active-panel-db'), 'S27 detects the live D1 binding automatically');
     const put = state.puts[0];
     check(!!put && put.name === 'my-active-panel', 'S27 uploaded to the chosen worker', put && put.name);
     if (put) {
@@ -901,6 +904,34 @@ try {
       const b = put.metadata && put.metadata.bindings;
       check(Array.isArray(b) && b.filter((x) => x.type === 'd1').length === 1, 'S27 re-attached exactly one D1 binding', JSON.stringify(b));
     }
+    check(!r.out.includes('D1 database name ['), 'S27 never asked for the database name');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S28 install detects an existing panel's database
+  console.log('• S28 a re-install over an existing worker reuses that worker\'s own database');
+  {
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({
+      // the worker is already deployed and bound to a database that does NOT follow
+      // the "<worker>-db" convention — the binding must win over name guessing
+      scripts: {
+        're-used-name': {
+          bytes: Buffer.from(CANON),
+          metadata: { bindings: [{ type: 'd1', name: 'DB', id: DB_UUID }], compatibility_date: '2026-07-10', compatibility_flags: ['nodejs_compat'] },
+        },
+      },
+      dbs: [{ name: 'some-other-database', uuid: DB_UUID }],
+    });
+    const r = await run(root, port, ['--install'], [TOKEN, 're-used-name', 'y', 'n']);
+    check(!r.fatal && r.code === 0, 'S28 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Detected automatically — this worker is already bound to some-other-database'), 'S28 detected the bound database by binding, not by name');
+    check(!r.out.includes('Database created: re-used-name-db'), 'S28 never created a second database');
+    const put = state.puts[0];
+    const b = put && put.metadata && put.metadata.bindings;
+    check(Array.isArray(b) && b.filter((x) => x.type === 'd1').length === 1 && b.find((x) => x.type === 'd1').id === DB_UUID, 'S28 bound the upload to the detected database', JSON.stringify(b));
+    check(state.dbs.length === 1, 'S28 left the account with the same single database', JSON.stringify(state.dbs));
     server.close();
     console.log('');
   }
