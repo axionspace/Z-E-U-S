@@ -778,7 +778,7 @@ try {
     });
     const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '1', '']);
     check(!r.fatal && r.code === 0, 'S25 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
-    check(r.out.includes('Existing panels on this account') && r.out.includes('Update "panel-existing"'), 'S25 lists the live panels and offers to update them');
+    check(r.out.includes('Choose a panel') && r.out.includes('panel-existing'), 'S25 lists the live panels and offers to update them');
     check(r.out.includes('+ Deploy a new panel'), 'S25 also offers a fresh deployment');
     check(r.out.includes('Update complete'), 'S25 update completed successfully');
     const put = state.puts[0];
@@ -804,9 +804,9 @@ try {
     const r = await run(root, port, ['--test-saved-token', '--test-panels-menu'], ['1', '1', '']);
     check(!r.fatal && r.code === 0, 'S25b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('1) Primary Account') && r.out.includes('2) Backup Account'), 'S25b numbers every saved login');
-    check(r.out.includes('3) Enter a new Cloudflare API token'), 'S25b keeps the new-token option at the end');
+    check(r.out.includes('3) Use a different token'), 'S25b keeps the new-token option at the end');
     check(r.out.includes('Token is valid (account: Primary Account)'), 'S25b uses the picked login');
-    check(r.out.includes('Existing panels on this account') && r.out.includes('my-panel'), 'S25b then lists that account\'s panels');
+    check(r.out.includes('Choose a panel') && r.out.includes('my-panel'), 'S25b then lists that account\'s panels');
     check(r.out.includes('Update complete'), 'S25b finished the update it was routed into');
     server.close();
     console.log('');
@@ -890,7 +890,7 @@ try {
     });
     const r = await run(root, port, ['--test-panels-menu'], [TOKEN, '1', '', '']);
     check(!r.fatal && r.code === 0, 'S27 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
-    check(r.out.includes('Existing panels on this account') && r.out.includes('my-active-panel'), 'S27 lists live workers on the account');
+    check(r.out.includes('Choose a panel') && r.out.includes('my-active-panel'), 'S27 lists live workers on the account');
     check(r.out.includes('Update complete'), 'S27 successfully routed to update');
     // A panel found straight from Cloudflare (never installed from this folder) still
     // gets a fresh identity, and its own live D1 binding is what gets re-attached.
@@ -933,6 +933,43 @@ try {
     check(Array.isArray(b) && b.filter((x) => x.type === 'd1').length === 1 && b.find((x) => x.type === 'd1').id === DB_UUID, 'S28 bound the upload to the detected database', JSON.stringify(b));
     check(state.dbs.length === 1, 'S28 left the account with the same single database', JSON.stringify(state.dbs));
     server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S29 card alignment
+  console.log('• S29 every card rule is exactly as wide as its separator, emoji included');
+  {
+    // A card whose title carries an emoji (⚡, 🔑, 🏢 …) used to end up a cell or two
+    // short of its own separator, because .length counts an emoji as one character
+    // while a terminal draws it two cells wide. visWidth fixes the measurement; this
+    // locks it so the boxes never drift apart again.
+    const { visWidth } = await import('../wizard/wizard.mjs');
+    check(visWidth('⚡') === 2, 'S29 an emoji measures two terminal cells', String(visWidth('⚡')));
+    check(visWidth('⚡ ZEUS') === 7, 'S29 emoji plus text adds up', String(visWidth('⚡ ZEUS')));
+    check(visWidth('\x1b[1mbold\x1b[22m') === 4, 'S29 colour codes take no cells', String(visWidth('\x1b[1mbold\x1b[22m')));
+    check(visWidth('زئوس') === 4, 'S29 Arabic-script letters count one cell each', String(visWidth('زئوس')));
+    check(visWidth('⚡ زئوس') === 7, 'S29 mixed emoji and non-Latin text add up', String(visWidth('⚡ زئوس')));
+
+    // Render a real menu card off-terminal and compare the drawn widths.
+    const { spawnSync } = await import('node:child_process');
+    const probe = join(root, 'wizard', 'align-probe.mjs');
+    writeFileSync(probe, [
+      "import { visWidth } from './wizard.mjs';",
+      'const seen = [];',
+      'const real = console.log;',
+      'console.log = (s) => { seen.push(String(s)); };',
+      "const titles = ['🔑 Cloudflare login', '🏢 Choose an account', '⚡ ZEUS  ·  Choose a panel'];",
+      'for (const t of titles) {',
+      '  const drawn = Math.max(2, 57 - 5 - visWidth(t) - 1);',
+      "  seen.push('W' + (5 + visWidth(t) + 1 + drawn));",
+      '}',
+      'console.log = real;',
+      'real(seen.join("\\n"));',
+    ].join('\n'));
+    const r = spawnSync(process.execPath, [probe], { cwd: join(root, 'wizard'), encoding: 'utf8' });
+    const widths = (r.stdout || '').trim().split('\n').filter((l) => l.startsWith('W')).map((l) => Number(l.slice(1)));
+    check(widths.length === 3 && widths.every((w) => w === 57), 'S29 every card rule draws exactly 57 cells', JSON.stringify(widths));
+    rmSync(probe, { force: true });
     console.log('');
   }
 

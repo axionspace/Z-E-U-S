@@ -117,11 +117,47 @@ function elapsed(from = T0) {
 function progressBar(n, total) {
   return S.cyan(G.on.repeat(Math.min(n, total))) + S.dim(G.off.repeat(Math.max(0, total - n)));
 }
+// How many terminal cells a string occupies. An emoji like ⚡ is ONE JavaScript
+// character but TWO columns wide, and combining marks take none — measuring with
+// .length is what left the top of a card a cell or two off its own separator.
+const ZERO_WIDTH = /[̀-ͯ​-‏⁠︀-️]/;
+function visWidth(s) {
+  let w = 0;
+  for (const ch of String(s).replace(/\x1b\[[0-9;]*m/g, '')) {
+    if (ZERO_WIDTH.test(ch)) continue;
+    const c = ch.codePointAt(0);
+    const wide =
+      (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0x303e) ||
+      (c >= 0x3041 && c <= 0x33ff) || (c >= 0x3400 && c <= 0x4dbf) ||
+      (c >= 0x4e00 && c <= 0x9fff) || (c >= 0xa000 && c <= 0xa4cf) ||
+      (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe6f) || (c >= 0xff00 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6) ||
+      (c >= 0x1f000 && c <= 0x1faff) || (c >= 0x2600 && c <= 0x27bf);
+    w += wide ? 2 : 1;
+  }
+  return w;
+}
+// Pad to an exact number of cells, so coloured and emoji text still lines up.
+const padTo = (text, cells) => text + ' '.repeat(Math.max(0, cells - visWidth(text)));
+
 // Open-right boxed cards (no right edge, so emoji width can never misalign anything).
-const cardTop = (title) => console.log('\n  ' + S.brand(G.tl + '─'.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand('─'.repeat(Math.max(2, 51 - title.length))));
+// Every row is padded to the same cell count via visWidth, which keeps the rule
+// above the title exactly as long as the separator, the shaded line and the footer.
+const CARD_W = 57;
+const cardTop = (title) => console.log('\n  ' + S.brand(G.tl + '─'.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand('─'.repeat(Math.max(2, CARD_W - 5 - visWidth(title) - 1))));
 const cardRow = (text = '') => console.log('  ' + S.brand('│') + (text ? '  ' + text : ''));
-const cardSep = () => console.log('  ' + S.brand('├' + '─'.repeat(56)));
-const cardEnd = () => console.log('  ' + S.brand(G.bl + '─'.repeat(56)));
+const cardSep = () => console.log('  ' + S.brand('├' + '─'.repeat(CARD_W - 1)));
+const cardEnd = () => console.log('  ' + S.brand(G.bl + '─'.repeat(CARD_W - 1)));
+// A menu line: the number, then the label, then a dimmed explanation. The
+// underline marks the row that Enter would pick, so the default is visible
+// without reading the prompt.
+const menuRow = (num, label, note = '', isDefault = false) => {
+  const marker = isDefault ? S.cyan('❯') : ' ';
+  const n = S.cyan(String(num).padStart(2));
+  const name = isDefault ? S.bold(label) : label;
+  return cardRow(marker + ' ' + n + '  ' + name + (note ? '  ' + S.dim(note) : ''));
+};
 // A wait that shows a spinner with the seconds left on a real terminal; a plain sleep elsewhere.
 async function pause(ms, label = '') {
   if (!COLOR || !(ms > 0) || !process.stdout.isTTY) return new Promise((r) => setTimeout(r, ms));
@@ -845,20 +881,21 @@ async function acquireToken(rl, tokenUrl) {
     const newIdx = savedList.length + 1;
     const labelOf = (acc, i) => acc.accountName || acc.accountId || ('Saved login #' + (i + 1));
     if (COLOR) {
-      cardTop('🔑 Cloudflare API token');
-      cardRow(S.dim('Saved logins on this machine:'));
+      cardTop('🔑 Cloudflare login');
       cardSep();
       savedList.forEach((acc, i) => {
-        cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(labelOf(acc, i)) + S.dim('   (••••••••)'));
+        menuRow(i + 1, labelOf(acc, i), 'saved · token ready', i === 0);
       });
-      cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.dim('Enter a new Cloudflare API token'));
+      menuRow(newIdx, 'Use a different token', 'paste a new one');
+      cardSep();
+      cardRow(S.dim('Tokens stay in ') + S.cyan('.token.json') + S.dim(' on this machine only.'));
       cardEnd();
     } else {
-      console.log('\n  Saved logins on this machine:');
+      console.log('\n  Cloudflare logins saved on this machine:');
       savedList.forEach((acc, i) => {
-        console.log(`     ${i + 1}) ${labelOf(acc, i)}   (••••••••)`);
+        console.log(`     ${i + 1}) ${labelOf(acc, i)}  (saved — token ready)`);
       });
-      console.log(`     ${newIdx}) Enter a new Cloudflare API token\n`);
+      console.log(`     ${newIdx}) Use a different token  (paste a new one)\n`);
     }
 
     const choice = (await ask(rl, `Select account (1-${newIdx})`, '1')).trim().toLowerCase();
@@ -905,13 +942,21 @@ async function selectCloudflareAccount(rl, defaultAccountId = '') {
   if (list.length === 1) {
     return { accountId: list[0].id, accountName: list[0].name || list[0].id };
   }
-  console.log('  Cloudflare accounts on this login:');
-  list.forEach((a, i) => {
-    const isDef = defaultAccountId && a.id === defaultAccountId;
-    console.log(`     ${i + 1}) ${a.name}  (${String(a.id).slice(0, 8)}...)${isDef ? '   (saved default)' : ''}`);
-  });
   const defIdx = defaultAccountId ? (list.findIndex((a) => a.id === defaultAccountId) + 1 || 1) : 1;
-  const raw = (await ask(rl, 'Account number', String(defIdx))).trim();
+  if (COLOR) {
+    cardTop('🏢 Choose an account');
+    cardSep();
+    list.forEach((a, i) => {
+      menuRow(i + 1, a.name || a.id, String(a.id).slice(0, 8) + '…', i + 1 === defIdx);
+    });
+    cardEnd();
+  } else {
+    console.log('  Cloudflare accounts on this login:');
+    list.forEach((a, i) => {
+      console.log(`     ${i + 1}) ${a.name}  (${String(a.id).slice(0, 8)}...)${i + 1 === defIdx ? '   (default)' : ''}`);
+    });
+  }
+  const raw = (await ask(rl, `Select an account (1-${list.length})`, String(defIdx))).trim();
   const picked = list[parseInt(raw, 10) - 1] || list[defIdx - 1];
   if (!picked) fail('Invalid selection.', 'Type one of the numbers listed above.');
   return { accountId: picked.id, accountName: picked.name || picked.id };
@@ -928,26 +973,37 @@ async function fetchWorkers(accountId) {
 // non-empty, so this always consumes exactly one answer.
 async function selectPanelTarget(rl, accountName, existingWorkers) {
   const newIdx = existingWorkers.length + 1;
+  const defaultIdx = Math.min(1, existingWorkers.length);
+  // Each row shows what the choice actually does, so the menu can be read at a
+  // glance: the panel name, and "update" versus "create" spelled out on the right.
+  const rows = existingWorkers.map((w, i) => ({
+    num: i + 1,
+    label: w.id,
+    note: 'update · keeps its database',
+    isDefault: i + 1 === defaultIdx,
+  }));
+  rows.push({ num: newIdx, label: '+ Deploy a new panel', note: 'new worker · new database', isDefault: false });
+
   if (COLOR) {
-    cardTop('⚡ ZEUS  ·  Existing panels on this account');
-    cardRow(S.dim('Found ' + existingWorkers.length + ' panel(s) in ') + S.bold(accountName));
+    cardTop('⚡ ZEUS  ·  Choose a panel');
+    cardRow(S.dim('On ') + S.bold(accountName) + S.dim(' — ' + existingWorkers.length + ' panel' + (existingWorkers.length === 1 ? '' : 's') + ' found'));
     cardSep();
-    existingWorkers.forEach((w, i) => {
-      cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold('Update "' + w.id + '"') + S.dim(' (fresh fingerprint, data preserved)'));
-    });
-    cardRow(S.cyan(String(newIdx).padStart(2)) + '  ' + S.bold('+ Deploy a new panel') + S.dim(' (fresh worker & new database)'));
+    rows.forEach((row) => menuRow(row.num, row.label, row.note, row.isDefault));
+    cardSep();
+    cardRow(S.dim('Enter picks the ') + S.cyan('❯') + S.dim(' row. Every option keeps the database it names.'));
     cardEnd();
   } else {
-    console.log(`\n  Existing panels on this account (${accountName}):`);
-    existingWorkers.forEach((w, i) => {
-      console.log(`     ${i + 1}) Update "${w.id}" (fresh fingerprint, data preserved)`);
+    console.log(`\n  Choose a panel on ${accountName}:`);
+    rows.forEach((row) => {
+      console.log(`     ${row.num}) ${row.label}  (${row.note})`);
     });
-    console.log(`     ${newIdx}) + Deploy a new panel (fresh worker & new database)\n`);
+    console.log('');
   }
-  const choiceRaw = (await ask(rl, `Select an action (1-${newIdx})`, '1')).trim().toLowerCase();
+
+  const choiceRaw = (await ask(rl, `Select a panel (1-${newIdx})`, String(defaultIdx))).trim().toLowerCase();
   let chosenIdx = -1;
-  if (choiceRaw === '' || choiceRaw === '1') {
-    chosenIdx = 0;
+  if (choiceRaw === '') {
+    chosenIdx = defaultIdx - 1;
   } else if (/^\d+$/.test(choiceRaw)) {
     const num = parseInt(choiceRaw, 10);
     if (num >= 1 && num <= existingWorkers.length) chosenIdx = num - 1;
@@ -2169,7 +2225,7 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, readWorkerD1, detectDatabaseFor, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, visWidth, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
 
 // Help, so a first-time owner knows what every flag does before running it.
 function helpText() {
