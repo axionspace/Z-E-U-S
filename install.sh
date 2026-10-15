@@ -193,6 +193,9 @@ for SRC in $SOURCES; do
   say "Starting the wizard (script kept in $INSTALL_DIR/$WIZARD for later runs)."
   printf '\n'
   cd "$INSTALL_DIR"
+  if [ "$ZEUS_UPDATE" = "1" ]; then
+    set -- "--update" "$@"
+  fi
   exec "$NODE" "$WIZARD" "$@"
 done
 

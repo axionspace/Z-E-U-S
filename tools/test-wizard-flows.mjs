@@ -761,6 +761,27 @@ try {
     console.log('');
   }
 
+  // ------------------------------------------------------------------ S25 interactive update choice
+  console.log('• S25 interactive wizard detects existing install and allows updating via menu');
+  {
+    const prof0 = {
+      version: 1, seed: 'ab'.repeat(16), fingerprint: true,
+      accountId: ACCOUNT_ID, accountName: 'Mock Account',
+      workerName: 'panel-existing', dbName: 'panel-existing-db', dbId: DB_UUID,
+      subdomain: SUB, panelUrl: 'https://panel-existing.te_st.workers.dev/panel',
+      names: { _ZK: '_zkold', _G: '_gold' }, rows: 89,
+      installedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z'
+    };
+    writeFileSync(profPath, JSON.stringify(prof0));
+    const { server, state, port } = await startMock({ dbs: [{ name: 'panel-existing-db', uuid: DB_UUID }] });
+    const r = await run(root, port, ['--menu'], ['1', TOKEN, '', '', '']);
+    check(!r.fatal && r.code === 0, 'S25 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(r.out.includes('Existing installation found') || r.out.includes('Update panel'), 'S25 prompt offers update option');
+    check(r.out.includes('Update complete'), 'S25 update completed successfully');
+    server.close();
+    console.log('');
+  }
+
   // ------------------------------------------------------------------ S8 static guarantees
   console.log('• S8 delivery chain and token shape');  {
     check(Array.isArray(FORK_SOURCES) && FORK_SOURCES.length === 6, 'S8 six independent source mirrors', FORK_SOURCES.length + ' entries');

@@ -183,7 +183,11 @@ Write-Host ""
 
 Push-Location $InstallDir
 try {
-    & $Node $Wizard @args
+    $wizardArgs = @($args)
+    if (($env:ZEUS_UPDATE -eq "1") -and ($wizardArgs -notcontains "--update")) {
+        $wizardArgs = @("--update") + $wizardArgs
+    }
+    & $Node $Wizard @wizardArgs
 } finally {
     Pop-Location
 }

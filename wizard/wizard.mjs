@@ -214,6 +214,7 @@ let pipedLines = null;
 let pipedIdx = 0;
 async function loadPipedInput() {
   if (process.stdin.isTTY) return;
+  if (pipedLines !== null) return;
   const chunks = [];
   for await (const c of process.stdin) chunks.push(c);
   pipedLines = Buffer.concat(chunks).toString('utf8').split(/\r?\n/);
@@ -1388,6 +1389,40 @@ async function main() {
 
   // Saved defaults from an earlier run in this folder (identity + account + worker + D1)
   const profile = loadProfile() || {};
+  const wantMenu = process.argv.includes('--menu') || (!pipedLines && profile && profile.workerName && !process.argv.includes('--install'));
+  if (wantMenu && profile && profile.workerName && !process.argv.includes('--install')) {
+    if (COLOR) {
+      cardTop('⚡ ZEUS  ·  Existing installation found');
+      cardRow(S.dim('worker   ') + S.bold(profile.workerName));
+      cardRow(S.dim('database ') + (profile.dbName || '(none)'));
+      cardRow(S.dim('address  ') + S.cyan(profile.panelUrl || '(unknown)'));
+      cardSep();
+      cardRow(S.cyan('1') + '  ' + S.bold('Update panel') + S.dim(' (recommended — updates code, preserves all data)'));
+      cardRow(S.cyan('2') + '  ' + S.bold('Fresh install') + S.dim(' (new worker name and new database)'));
+      cardRow(S.cyan('3') + '  ' + S.bold('Run diagnostics') + S.dim(' (--doctor, check worker health)'));
+      cardEnd();
+    } else {
+      console.log(`\n  Existing installation found in this folder:`);
+      console.log(`    worker  : ${profile.workerName}`);
+      console.log(`    database: ${profile.dbName || '(none)'}`);
+      console.log(`    address : ${profile.panelUrl || '(unknown)'}\n`);
+      console.log('  1) Update panel (recommended — updates code, preserves all data)');
+      console.log('  2) Fresh install (new worker name and new database)');
+      console.log('  3) Run diagnostics (--doctor, check worker health)\n');
+    }
+    const choice = (await ask(rl, 'Select an action (1/2/3)', '1')).trim();
+    if (choice === '1') {
+      cleanup();
+      return updateMain();
+    }
+    if (choice === '3') {
+      cleanup();
+      process.argv.push(profile.workerName);
+      return doctorMain();
+    }
+    console.log('');
+  }
+
   let seed = null;
   if (noFingerprint) {
     warn('--no-fingerprint: the shared repository build is uploaded unchanged.');
@@ -1708,6 +1743,7 @@ async function prepareOnlyMain() {
 // same D1 database is re-attached and a read-only row census proves the data survived.
 async function updateMain() {
   totalSteps = 6;
+  step = 0;
   const profile = loadProfile();
   if (!profile) {
     fail('No install profile was found in this folder — --update works on an install made by this wizard.',
