@@ -1780,7 +1780,24 @@ async function updateMain() {
   if (accounts.ok && accounts.data.result && accounts.data.result.length && !accounts.data.result.some((a) => a.id === accountId)) {
     warn('This token does not list that account id — continuing anyway.');
   }
-  const workerName = (await ask(rl, 'Worker name', profile.workerName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+  const workerListRes = await cf(`/accounts/${accountId}/workers/scripts?per_page=100`);
+  const workerScripts = (workerListRes.ok && Array.isArray(workerListRes.data.result)) ? workerListRes.data.result : [];
+  if (workerScripts.length > 1) {
+    console.log('  Workers found in this account:');
+    workerScripts.forEach((w, i) => {
+      const isDef = w.id === profile.workerName;
+      console.log(`     ${i + 1}) ${w.id}${isDef ? '   (saved default)' : ''}`);
+    });
+  }
+
+  let workerAns = (await ask(rl, 'Worker name' + (workerScripts.length > 1 ? ' (or number)' : ''), profile.workerName)).trim();
+  let workerName = workerAns;
+  if (/^\d+$/.test(workerAns)) {
+    const idx = parseInt(workerAns, 10);
+    if (workerScripts[idx - 1]) workerName = workerScripts[idx - 1].id;
+  }
+  workerName = workerName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the stored name.');
   const current = await workerExists(accountId, workerName);
   if (!current.ok) warn('Could not read the account script list (' + current.errors + ') — continuing.');
@@ -1790,12 +1807,30 @@ async function updateMain() {
   // ---------- [3/6] database
   nextStep('Re-attach the existing database');
   why('The very same database is re-attached and its row census is compared before and after so nothing can be lost silently.');
-  const dbName = (await ask(rl, 'D1 database name', profile.dbName || workerName + '-db')).trim();
+  let detectedDbName = '';
+  let detectedDbId = '';
+  if (workerName !== profile.workerName) {
+    const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+    if (st.ok && st.data.result && Array.isArray(st.data.result.bindings)) {
+      const d1 = st.data.result.bindings.find((b) => b.type === 'd1');
+      if (d1) {
+        detectedDbId = d1.id || d1.database_id || '';
+        if (detectedDbId) {
+          const dl = await cf(`/accounts/${accountId}/d1/database/${detectedDbId}`);
+          if (dl.ok && dl.data.result && dl.data.result.name) detectedDbName = dl.data.result.name;
+        }
+      }
+    }
+  }
+  const defaultDb = (workerName === profile.workerName ? profile.dbName : detectedDbName) || workerName + '-db';
+  const dbName = (await ask(rl, 'D1 database name', defaultDb)).trim();
   let dbId = '';
   const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
   const found = listDb.ok && (listDb.data.result || []).find((d) => d.name === dbName);
   if (found) dbId = found.uuid;
-  else if (profile.dbId) {
+  else if (detectedDbId) {
+    dbId = detectedDbId;
+  } else if (profile.dbId && workerName === profile.workerName) {
     const direct = await cf(`/accounts/${accountId}/d1/database/${profile.dbId}`);
     if (direct.ok) { dbId = profile.dbId; warn('No database named "' + dbName + '" — using the saved database id instead.');}
   }
