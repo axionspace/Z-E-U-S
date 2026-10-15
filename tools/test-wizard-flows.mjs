@@ -215,7 +215,7 @@ function startMock(opt = {}) {
 // The first-install route priming (a delete + recreate of the brand-new script) is switched
 // off for every older scenario so their "no DELETE" assertions keep their meaning; S24 turns it on.
 let RUN_ENV = { ZEUS_NO_PREWARM: '1' };
-function run(dir, port, args, answers) {
+function run(dir, port, args, answers, extraEnv = {}) {
   return new Promise((res) => {
     const src = readFileSync(WIZARD_SRC, 'utf8');
     const patched = src.replace("const API = 'https://api.cloudflare.com/client/v4';", `const API = 'http://127.0.0.1:${port}/client/v4';`);
@@ -236,6 +236,7 @@ function run(dir, port, args, answers) {
         ZEUS_PROBE_INTERVAL_MS: '400',
         ZEUS_SETTLE_MS: '100',
         ...RUN_ENV,
+        ...extraEnv,
       },
     });
     let out = '';
@@ -970,6 +971,51 @@ try {
     const widths = (r.stdout || '').trim().split('\n').filter((l) => l.startsWith('W')).map((l) => Number(l.slice(1)));
     check(widths.length === 3 && widths.every((w) => w === 57), 'S29 every card rule draws exactly 57 cells', JSON.stringify(widths));
     rmSync(probe, { force: true });
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S30 classic Windows console
+  console.log('• S30 a classic Windows console only ever gets plain ASCII');
+  {
+    // cmd.exe draws its output in CP437, where the arc corners, the ❯ menu marker
+    // and every emoji come out as "?" boxes. Read the classic sets straight out of
+    // the source (the wizard's own G/ICON depend on the terminal it was loaded in).
+    const wizSrc = readFileSync(WIZARD_SRC, 'utf8');
+    const setOf = (name) => {
+      const m = wizSrc.match(new RegExp('const ' + name + ' = \\{([^}]*)\\}'));
+      return m ? m[1] : '';
+    };
+    const classicG = setOf('CLASSIC_G');
+    const classicIcons = setOf('CLASSIC_ICON');
+    check(!!classicG && !!classicIcons, 'S30 both classic sets exist in the source');
+    const nonAscii = (s) => [...String(s)].filter((ch) => ch.codePointAt(0) > 0x7e);
+    check(nonAscii(classicG).length === 0, 'S30 the classic glyph set is all ASCII', JSON.stringify([...new Set(nonAscii(classicG))].join('')));
+    check(nonAscii(classicIcons).length === 0, 'S30 the classic icon set is all ASCII', JSON.stringify([...new Set(nonAscii(classicIcons))].join('')));
+    check(/mark:\s*'>'/.test(classicG), 'S30 the classic default marker is a plain ">"');
+    check(/tl:\s*'\+'/.test(classicG) && /bl:\s*'\+'/.test(classicG), 'S30 the classic corners are plain "+"');
+
+    // Both sets must define the same keys, or a classic run would print "undefined"
+    // where the modern one prints a symbol.
+    const keysOf = (blob) => (blob.match(/([a-zA-Z]+):/g) || []).map((k) => k.slice(0, -1)).sort();
+    const modernG = setOf('MODERN_G');
+    const modernIcons = setOf('MODERN_ICON');
+    check(keysOf(modernG).join(',') === keysOf(classicG).join(','), 'S30 both glyph sets define the same keys',
+      keysOf(modernG).join(',') + ' vs ' + keysOf(classicG).join(','));
+    check(keysOf(modernIcons).join(',') === keysOf(classicIcons).join(','), 'S30 both icon sets define the same keys',
+      keysOf(modernIcons).join(',') + ' vs ' + keysOf(classicIcons).join(','));
+
+    // And end to end: a full run with the classic console forced on must print
+    // nothing but ASCII (the mock only ever answers with ASCII, so any high byte
+    // in the transcript came from the wizard's own output).
+    rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock();
+    const r = await run(root, port, [], [TOKEN, '', 'n'], { ZEUS_FORCE_CLASSIC: '1' });
+    check(!r.fatal && r.code === 0, 'S30 classic run exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-1500));
+    const highBytes = [...new Set(nonAscii(r.out))];
+    check(highBytes.length === 0, 'S30 the whole classic run output is ASCII', JSON.stringify(highBytes.slice(0, 12).join('')));
+    check(r.out.includes('Install complete'), 'S30 the classic run still completes the install');
+    check(r.out.includes('[ok]') || r.out.includes('Read-back matches'), 'S30 classic success lines use the ASCII marker');
+    server.close();
     console.log('');
   }
 

@@ -99,10 +99,23 @@ const COLOR = !process.argv.includes('--no-color') && !process.env.NO_COLOR && p
 // Classic Windows consoles (cmd.exe, the old PowerShell host) lack the arc corners, the ▰▱ bar and the
 // braille spinner and show "?" boxes instead. Windows Terminal, VS Code, Git Bash and every non-Windows
 // terminal get the full set; the classic console gets glyphs from its own code page (CP437).
-const MODERN = process.platform !== 'win32' || !!(process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuANSI || /xterm|vt100|ansi|cygwin|screen/i.test(process.env.TERM || ''));
-const G = MODERN
-  ? { tl: '╭', bl: '╰', on: '▰', off: '▱', spin: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] }
-  : { tl: '┌', bl: '└', on: '█', off: '░', spin: ['|', '/', '-', '\\'] };
+// Windows Terminal, VS Code, Git Bash and every non-Windows terminal get the full
+// glyph set. A classic Windows console (cmd.exe / the old PowerShell host) draws its
+// output in CP437, where the arc corners, the ❯ marker, the ▰▱ bar, the braille
+// spinner and every emoji come out as "?" — so it gets a plain-ASCII set instead.
+// G holds glyphs; ICON holds the little in-line marks and their ASCII fallbacks.
+const MODERN = process.env.ZEUS_FORCE_CLASSIC === '1' ? false : (process.env.ZEUS_FORCE_MODERN === '1' || process.platform !== 'win32' || !!(process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuANSI || /xterm|vt100|ansi|cygwin|screen/i.test(process.env.TERM || '')));
+// Both sets are plain constants so the classic one can be asserted directly, without
+// having to run a child process with a patched environment.
+const MODERN_G = { tl: '╭', bl: '╰', on: '▰', off: '▱', mark: '❯', note: '·', dash: '—', spin: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] };
+const CLASSIC_G = { tl: '+', bl: '+', on: '#', off: '-', mark: '>', note: '-', dash: '-', spin: ['|', '/', '-', '\\'] };
+const G = MODERN ? MODERN_G : CLASSIC_G;
+// Every in-line symbol the wizard prints, with a pure-ASCII twin. `ic()` picks the
+// right one, so no message ever shows a "?" box on a classic console.
+const MODERN_ICON = { bolt: '⚡', key: '🔑', bank: '🏢', up: '🔄', party: '🎉', warn: '⚠️', ok: '✅', cross: '❌', bulb: '💡', lock: '🔒', pin: '📍', link: '🔗', stop: '🛑' };
+const CLASSIC_ICON = { bolt: '*', key: '*', bank: '*', up: '*', party: '*', warn: '!', ok: '[ok]', cross: '[x]', bulb: '->', lock: '[lock]', pin: '->', link: '->', stop: '[!]' };
+const ICON = MODERN ? MODERN_ICON : CLASSIC_ICON;
+const ic = (name) => ICON[name] || '';
 const sgr = (on, off) => (s) => (COLOR ? `\x1b[${on}m${s}\x1b[${off}m` : String(s));
 const S = {
   bold: sgr(1, 22), dim: sgr(2, 22), red: sgr(31, 39), green: sgr(32, 39), yellow: sgr(33, 39),
@@ -144,20 +157,55 @@ const padTo = (text, cells) => text + ' '.repeat(Math.max(0, cells - visWidth(te
 // Open-right boxed cards (no right edge, so emoji width can never misalign anything).
 // Every row is padded to the same cell count via visWidth, which keeps the rule
 // above the title exactly as long as the separator, the shaded line and the footer.
+// The corners and the separator come from G, so a classic console draws a plain
+// "+---" style box instead of "?" boxes.
 const CARD_W = 57;
-const cardTop = (title) => console.log('\n  ' + S.brand(G.tl + '─'.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand('─'.repeat(Math.max(2, CARD_W - 5 - visWidth(title) - 1))));
-const cardRow = (text = '') => console.log('  ' + S.brand('│') + (text ? '  ' + text : ''));
-const cardSep = () => console.log('  ' + S.brand('├' + '─'.repeat(CARD_W - 1)));
-const cardEnd = () => console.log('  ' + S.brand(G.bl + '─'.repeat(CARD_W - 1)));
+// A classic console has no line-drawing characters at all, so its box is built from
+// "-" and "|". Both variants are one cell wide, so the same width maths holds.
+const CARD_H = MODERN ? '─' : '-';
+const CARD_V = MODERN ? '│' : '|';
+const CARD_T = MODERN ? '├' : '+';
+const cardTop = (title) => say('\n  ' + S.brand(G.tl + CARD_H.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand(CARD_H.repeat(Math.max(2, CARD_W - 5 - visWidth(title) - 1))));
+const cardRow = (text = '') => say('  ' + S.brand(CARD_V) + (text ? '  ' + text : ''));
+const cardSep = () => say('  ' + S.brand(CARD_T + CARD_H.repeat(CARD_W - 1)));
+const cardEnd = () => say('  ' + S.brand(G.bl + CARD_H.repeat(CARD_W - 1)));
 // A menu line: the number, then the label, then a dimmed explanation. The
-// underline marks the row that Enter would pick, so the default is visible
-// without reading the prompt.
+// marker flags the row Enter would pick, so the default is visible without
+// reading the prompt. On a classic console the marker is a plain ">".
 const menuRow = (num, label, note = '', isDefault = false) => {
-  const marker = isDefault ? S.cyan('❯') : ' ';
+  const marker = ' ' + (isDefault ? S.cyan(G.mark) : ' ') + ' ';
   const n = S.cyan(String(num).padStart(2));
   const name = isDefault ? S.bold(label) : label;
-  return cardRow(marker + ' ' + n + '  ' + name + (note ? '  ' + S.dim(note) : ''));
+  return cardRow(marker + n + '  ' + name + (note ? '  ' + S.dim(note.split(' · ').join(' ' + G.note + ' ')) : ''));
 };
+// Classic consoles draw CP437, where every one of these glyphs is a "?" box. On
+// such a terminal the whole transcript is transcoded to ASCII in one place — so
+// no message, box rule or separator can leak a character that console cannot
+// draw, no matter who wrote the string. Modern terminals get it untouched.
+const ASCII_MAP = {
+  '─': '-', '│': '|', '├': '+', '┌': '+', '╭': '+', '╰': '+', '└': '+', '┐': '+', '┘': '+', '┤': '+',
+  '‾': '-', '▁': '_',
+  '—': '--', '–': '-', '·': '-', '•': '*', '’': "'", '‘': "'", '“': '"', '”': '"', '…': '...',
+  '→': '->', '←': '<-', '↔': '<->', '›': '>', '❯': '>', '✔': 'ok', '✓': 'ok', '✗': 'x', '❌': 'x',
+  '🔑': '*', '⚡': '*', '🏢': '*', '🔄': '*', '🎉': '*', '⚠️': '!', '⚠': '!', '✅': '[ok]', '💡': '->',
+  '🔒': '[lock]', '📍': '->', '🔗': '->', '🛑': '[!]', '🌐': '', '▰': '#', '▱': '-', '█': '#', '░': '-',
+};
+const ASCII_RE = new RegExp('(' + Object.keys(ASCII_MAP).map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'g');
+const plain = (s) => (MODERN ? String(s) : String(s).replace(ASCII_RE, (m) => ASCII_MAP[m]));
+// Everything the wizard prints goes through these. On a classic console the global
+// console methods are also wrapped, so a write that bypasses say() — a helper that
+// logs as its own `log` object, for instance — cannot slip a "?" box past it either.
+const say = (s = '') => console.log(plain(s));
+const sayErr = (s = '') => console.error(plain(s));
+if (!MODERN) {
+  for (const method of ['log', 'error', 'warn', 'info']) {
+    const original = console[method].bind(console);
+    console[method] = (...args) => original(...args.map((a) => (typeof a === 'string' ? plain(a) : a)));
+  }
+}
+// The success tick is drawn from here so the classic console gets the ASCII twin.
+const tick = () => (MODERN ? ' ✔' : ' ok');
+
 // A wait that shows a spinner with the seconds left on a real terminal; a plain sleep elsewhere.
 async function pause(ms, label = '') {
   if (!COLOR || !(ms > 0) || !process.stdout.isTTY) return new Promise((r) => setTimeout(r, ms));
@@ -165,7 +213,7 @@ async function pause(ms, label = '') {
   const end = Date.now() + ms;
   for (let i = 0; Date.now() < end; i++) {
     const left = Math.ceil((end - Date.now()) / 1000);
-    process.stdout.write('\r\x1b[2K     ' + S.cyan(frames[i % frames.length]) + ' ' + S.dim(label + ' · ' + left + 's'));
+    process.stdout.write('\r\x1b[2K     ' + S.cyan(frames[i % frames.length]) + ' ' + S.dim(label + ' ' + G.note + ' ' + left + 's'));
     await new Promise((r) => setTimeout(r, Math.max(1, Math.min(90, end - Date.now()))));
   }
   process.stdout.write('\r\x1b[2K');
@@ -177,20 +225,20 @@ const STEP_LIST = [
   'Check the address, then optionally add a domain',
 ];
 function bannerStyled() {
-  cardTop('⚡ ZEUS  ·  Install Wizard');
+  cardTop(ic('bolt') + ' ZEUS  ·  Install Wizard');
   cardRow(S.dim('automated installer for the hardened panel'));
   cardSep();
   STEP_LIST.forEach((t, i) => cardRow(S.cyan(String(i + 1).padStart(2)) + '  ' + t));
   cardSep();
   cardRow(S.dim('Saved logins, accounts and panels are offered as numbered menus.'));
   cardEnd();
-  console.log('     🔒 ' + S.dim('Your API token is saved only on this machine (.token.json) — never uploaded, printed, or logged.'));
+  say('     ' + ic('lock') + ' ' + S.dim('Your API token is saved only on this machine (.token.json) — never uploaded, printed, or logged.'));
 }
 function banner() {
   if (COLOR) return bannerStyled();
-  console.log(`
+  say(`
 ${line}
-    ⚡ Zeus Install Wizard — automated installer for the hardened panel
+    ${ic('bolt')} Zeus Install Wizard — automated installer for the hardened panel
 ${line}
     This wizard will:
        [1/10]  Validate your Cloudflare API token (saved logins are offered by number)
@@ -205,14 +253,14 @@ ${line}
       [10/10]  Check the address, then (optionally) attach a custom domain
     Later on, "node wizard.mjs --update" repeats this using the saved defaults.
 ${line}
-    🔒 Safety: your API token is saved only on this machine (.token.json) — never uploaded, printed, or logged.
+    ${ic('lock')} Safety: your API token is saved only on this machine (.token.json) — never uploaded, printed, or logged.
 ${line}`);
 }
 function bannerUpdate(profile) {
   const hasProfile = !!(profile && profile.workerName);
   const dbLabel = (profile && profile.dbName) || '(read from the worker)';
   if (COLOR) {
-    cardTop('⚡ ZEUS  ·  Update');
+    cardTop(ic('bolt') + ' ZEUS  ·  Update');
     cardRow(S.dim('only the worker script is replaced — the database and its rows are never touched'));
     if (hasProfile) {
       cardSep();
@@ -229,9 +277,9 @@ function bannerUpdate(profile) {
     cardEnd();
     return;
   }
-  console.log(`
+  say(`
 ${line}
-    ⚡ Zeus Install Wizard — update
+    ${ic('bolt')} Zeus Install Wizard — update
 ${line}
     An update replaces only the worker script. It gets a brand-new build identity,
     but nothing else changes:
@@ -268,10 +316,10 @@ async function ask(rl, q, def = '') {
   if (pipedLines) {
     const a = nextPiped();
     if (a === null) {
-      if (def) { console.log(prompt + def + '   (no more input — using the default)'); return def; }
+      if (def) { say(prompt + def + '   (no more input — using the default)'); return def; }
       fail('No answer was left in the non-interactive input, and this question has no default: ' + q, 'Run the wizard interactively, or pipe one answer per question in order.');
     }
-    console.log(prompt + (a === '' && def ? `${def}   (default)` : a));
+    say(prompt + (a === '' && def ? `${def}   (default)` : a));
     return a || def;
   }
   const a = (await rl.question(prompt)).trim();
@@ -309,19 +357,19 @@ function restoreTty() {
 // stays clickable and copyable, and a one-line privacy note.
 function tokenGuide(url) {
   if (!COLOR) {
-    console.log('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
-    console.log(`     ${url}`);
-    console.log('  (Continue to summary → Create Token → copy the created token and paste it here)');
-    console.log('  🔒 Nothing you type is echoed; only a fixed mask with the character count is shown.');
+    say('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
+    say(`     ${url}`);
+    say('  (Continue to summary → Create Token → copy the created token and paste it here)');
+    say('  ' + ic('lock') + ' Nothing you type is echoed; only a fixed mask with the character count is shown.');
     return;
   }
-  cardTop('🔑 Cloudflare API token');
+  cardTop(ic('key') + ' Cloudflare API token');
   cardRow(S.cyan('1') + '  Open the link below  ' + S.dim('(permissions pre-set, random name)'));
   cardRow(S.cyan('2') + '  Continue to summary → Create Token → copy the token');
   cardRow(S.cyan('3') + '  Paste it at the prompt and press Enter');
   cardEnd();
-  console.log('\n     ' + S.cyan(S.under(url)) + '\n');
-  console.log('     🔒 ' + S.dim('Typing is hidden — only a mask and the character count are shown.') + '\n');
+  say('\n     ' + S.cyan(S.under(url)) + '\n');
+  say('     ' + ic('lock') + ' ' + S.dim('Typing is hidden — only a mask and the character count are shown.') + '\n');
 }
 
 async function askSecret(rl, q) {
@@ -330,7 +378,7 @@ async function askSecret(rl, q) {
     let a = nextPiped();
     while (a === '') a = nextPiped(); // an empty token is meaningless; skip empty lines
     if (a === null) fail('No value was left in the non-interactive input for "' + q + '".', 'Set ZEUS_CF_TOKEN to pass the API token without typing it.');
-    console.log('  ' + label + '\n    ' + q + '\n  ' + maskSecret(a.trim()));
+    say('  ' + label + '\n    ' + q + '\n  ' + maskSecret(a.trim()));
     return a.trim();
   }
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') {
@@ -345,13 +393,13 @@ async function askSecret(rl, q) {
       rl.output = muted;
       do { a = (await rl.question('')).trim(); } while (!a);
     } finally { rl.output = orig; }
-    console.log('  ' + maskSecret(a));
+    say('  ' + maskSecret(a));
     return a;
   }
 
   return new Promise((resolve) => {
     const stdin = process.stdin;
-    const head = '  ' + S.bold('🔑 Token') + S.dim(' ›') + ' ';
+    const head = '  ' + S.bold(ic('key') + ' Token') + S.dim(' ›') + ' ';
     const hint = 'paste your token here';
     let value = '';
     let done = false;
@@ -414,7 +462,7 @@ async function askSecret(rl, q) {
       done = true;
       cleanup();
       wipe();                                  // replace the mask line with the confirmation
-      process.stdout.write('  ✅ ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n');
+      process.stdout.write('  ' + ic('ok') + ' ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n');
       resolve(v);
     };
     const onKey = (str, key) => {
@@ -451,18 +499,18 @@ async function askSecret(rl, q) {
   });
 }
 
-function ok(msg) { console.log(`  ✅ ${msg}`); }
-function warn(msg) { console.log(`  ⚠️  ${S.yellow(msg)}`); }
-function info(msg) { console.log(`     ${S.dim(msg)}`); }
+function ok(msg) { say(`  ${ic('ok')} ${msg}`); }
+function warn(msg) { say(`  ${ic('warn')} ${S.yellow(msg)}`); }
+function info(msg) { say(`     ${S.dim(msg)}`); }
 // Context line printed before every Cloudflare-touching step.
 function why(line) {
-  console.log('     ' + S.dim(line));
+  say('     ' + S.dim(line));
 }
 let activeRl = null; // for a clean readline exit (avoids the Windows assert)
 // Every error ends with ONE concrete next action.
 function fail(msg, hint) {
-  console.error(`\n  ❌ ${S.red(S.bold(msg))}`);
-  if (hint) console.error(`     💡 Next step: ${S.cyan(hint)}`);
+  sayErr(`\n  ${ic('cross')} ${S.red(S.bold(msg))}`);
+  if (hint) sayErr(`     ${ic('bulb')} Next step: ${S.cyan(hint)}`);
   process.exitCode = 1;
   restoreTty();
   try { process.stdin.pause(); } catch {}
@@ -472,10 +520,10 @@ function fail(msg, hint) {
 function nextStep(title) {
   step++;
   if (COLOR) {
-    console.log(`\n${rule()}\n  ${S.bold(S.cyan(`[${step}/${totalSteps}]`))}  ${progressBar(step, totalSteps)}  ${S.bold(title)}${S.dim('   ' + elapsed())}\n${rule()}`);
+    say(`\n${rule()}\n  ${S.bold(S.cyan(`[${step}/${totalSteps}]`))}  ${progressBar(step, totalSteps)}  ${S.bold(title)}${S.dim('   ' + elapsed())}\n${rule()}`);
     return;
   }
-  console.log(`\n${line}\n  [${step}/${totalSteps}]  ${title}\n${line}`);
+  say(`\n${line}\n  [${step}/${totalSteps}]  ${title}\n${line}`);
 }
 
 // ---------------------------------------------------------------- CF helpers
@@ -528,7 +576,7 @@ async function prepareSource(rl) {
   }
 
   // 2) Download from this repository (raw first as the canonical source; jsdelivr CDN mirrors as fallback)
-  console.log('  ⏳ Downloading the hardened source from axionspace/Z-E-U-S ...');
+  say('  ⏳ Downloading the hardened source from axionspace/Z-E-U-S ...');
   for (const url of FORK_SOURCES) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
@@ -881,7 +929,7 @@ async function acquireToken(rl, tokenUrl) {
     const newIdx = savedList.length + 1;
     const labelOf = (acc, i) => acc.accountName || acc.accountId || ('Saved login #' + (i + 1));
     if (COLOR) {
-      cardTop('🔑 Cloudflare login');
+      cardTop(ic('key') + ' Cloudflare login');
       cardSep();
       savedList.forEach((acc, i) => {
         menuRow(i + 1, labelOf(acc, i), 'saved · token ready', i === 0);
@@ -891,11 +939,11 @@ async function acquireToken(rl, tokenUrl) {
       cardRow(S.dim('Tokens stay in ') + S.cyan('.token.json') + S.dim(' on this machine only.'));
       cardEnd();
     } else {
-      console.log('\n  Cloudflare logins saved on this machine:');
+      say('\n  Cloudflare logins saved on this machine:');
       savedList.forEach((acc, i) => {
-        console.log(`     ${i + 1}) ${labelOf(acc, i)}  (saved — token ready)`);
+        say(`     ${i + 1}) ${labelOf(acc, i)}  (saved — token ready)`);
       });
-      console.log(`     ${newIdx}) Use a different token  (paste a new one)\n`);
+      say(`     ${newIdx}) Use a different token  (paste a new one)\n`);
     }
 
     const choice = (await ask(rl, `Select account (1-${newIdx})`, '1')).trim().toLowerCase();
@@ -944,16 +992,16 @@ async function selectCloudflareAccount(rl, defaultAccountId = '') {
   }
   const defIdx = defaultAccountId ? (list.findIndex((a) => a.id === defaultAccountId) + 1 || 1) : 1;
   if (COLOR) {
-    cardTop('🏢 Choose an account');
+    cardTop(ic('bank') + ' Choose an account');
     cardSep();
     list.forEach((a, i) => {
       menuRow(i + 1, a.name || a.id, String(a.id).slice(0, 8) + '…', i + 1 === defIdx);
     });
     cardEnd();
   } else {
-    console.log('  Cloudflare accounts on this login:');
+    say('  Cloudflare accounts on this login:');
     list.forEach((a, i) => {
-      console.log(`     ${i + 1}) ${a.name}  (${String(a.id).slice(0, 8)}...)${i + 1 === defIdx ? '   (default)' : ''}`);
+      say(`     ${i + 1}) ${a.name}  (${String(a.id).slice(0, 8)}...)${i + 1 === defIdx ? '   (default)' : ''}`);
     });
   }
   const raw = (await ask(rl, `Select an account (1-${list.length})`, String(defIdx))).trim();
@@ -985,19 +1033,19 @@ async function selectPanelTarget(rl, accountName, existingWorkers) {
   rows.push({ num: newIdx, label: '+ Deploy a new panel', note: 'new worker · new database', isDefault: false });
 
   if (COLOR) {
-    cardTop('⚡ ZEUS  ·  Choose a panel');
+    cardTop(ic('bolt') + ' ZEUS  ·  Choose a panel');
     cardRow(S.dim('On ') + S.bold(accountName) + S.dim(' — ' + existingWorkers.length + ' panel' + (existingWorkers.length === 1 ? '' : 's') + ' found'));
     cardSep();
     rows.forEach((row) => menuRow(row.num, row.label, row.note, row.isDefault));
     cardSep();
-    cardRow(S.dim('Enter picks the ') + S.cyan('❯') + S.dim(' row. Every option keeps the database it names.'));
+    cardRow(S.dim('Enter picks the ') + S.cyan(G.mark) + S.dim(' row. Every option keeps the database it names.'));
     cardEnd();
   } else {
-    console.log(`\n  Choose a panel on ${accountName}:`);
+    say(`\n  Choose a panel on ${accountName}:`);
     rows.forEach((row) => {
-      console.log(`     ${row.num}) ${row.label}  (${row.note})`);
+      say(`     ${row.num}) ${row.label}  (${row.note})`);
     });
-    console.log('');
+    say('');
   }
 
   const choiceRaw = (await ask(rl, `Select a panel (1-${newIdx})`, String(defaultIdx))).trim().toLowerCase();
@@ -1029,8 +1077,8 @@ function fingerprint(srcPath, seed) {
   const chk = spawnSync(process.execPath, ['--check', out], { encoding: 'utf8' });
   if (chk.status !== 0) fail('The personalised build failed a syntax check.', (chk.stderr || '').split('\n').slice(0, 3).join(' '));
   ok('Personalised build ready: ' + r.entries + ' payload rows re-keyed and re-ordered, ' + Object.keys(r.names).length + ' generated identifiers renamed');
-  console.log('     new internal names: ' + Object.values(r.names).slice(0, 5).join(', ') + ' …');
-  console.log('     ' + (r.out.length / 1024).toFixed(0) + 'KB, zero keyword survivors, syntax check passed');
+  say('     new internal names: ' + Object.values(r.names).slice(0, 5).join(', ') + ' …');
+  say('     ' + (r.out.length / 1024).toFixed(0) + 'KB, zero keyword survivors, syntax check passed');
   return { path: out, names: r.names, rows: r.entries };
 }
 
@@ -1162,7 +1210,7 @@ async function settleDeploy(fresh) {
   const override = process.env.ZEUS_SETTLE_MS;
   const wait = (override !== undefined && override !== '' && Number.isFinite(Number(override))) ? Number(override) : ms;
   if (!(wait > 0)) return;
-  console.log('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
+  say('     Letting the route attach (~' + Math.round(ms / 1000) + 's) before the first check…');
   await pause(wait, 'Letting the route attach');
 }
 
@@ -1171,9 +1219,9 @@ async function settleDeploy(fresh) {
 // one-off deploy state on Cloudflare's side. Deleting the worker and deploying again
 // clears it, and the D1 data is never part of that state.
 function stuckWorkerHint() {
-  console.log('     If this worker keeps answering "error code: 1101" on every route while the');
-  console.log('     deploy itself reported success, delete the worker in the dashboard and run');
-  console.log('     this wizard again with the same name — the database and its data are kept.');
+  say('     If this worker keeps answering "error code: 1101" on every route while the');
+  say('     deploy itself reported success, delete the worker in the dashboard and run');
+  say('     this wizard again with the same name — the database and its data are kept.');
 }
 
 // Does the worker already exist? The single-script endpoint answers with the script
@@ -1249,7 +1297,7 @@ async function deployedBytes(accountId, name) {
 async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName, opts = {}) {
   // quiet: success / progress lines are skipped (warnings and failures always print)
   const qok = (m) => { if (!opts.quiet) ok(m); };
-  const qlog = (m) => { if (!opts.quiet) console.log(m); };
+  const qlog = (m) => { if (!opts.quiet) say(m); };
   const bytes = readFileSync(scriptPath);
   let bindings = [{ type: 'd1', name: 'DB', id: dbId }];
   let compat = REQUIRED_COMPAT_DATE;
@@ -1468,7 +1516,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
       stableRounds++;
       // Verify stability over 2 consecutive agreeing reads so a transient early 200 cannot fake success:
       if (stableRounds >= 2) {
-        log.log('  ✅ Panel address answers ' + last.status + ' ✔');
+        log.log('  ' + ic('ok') + ' Panel address answers ' + last.status + ' ✔');
         return { ok: true, state: 'ok', healed: false, rebuilt: null };
       }
     } else {
@@ -1480,7 +1528,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     if (last.code === '1101' || state === 'stuck') break;
     if (Date.now() >= deadline) break;
     if (attempt % 2 === 1) {
-      console.log('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
+      say('     Waiting for edge route propagation (' + (last.net || ('HTTP ' + last.status)) + ' — warming up, checking every ' + (stepMs / 1000).toFixed(1) + 's)…');
     }
     await pause(stepMs, 'Waiting for the address to answer');
   }
@@ -1488,18 +1536,18 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const first = await probeAll(base);
   let verdict = classifyDeployment(first);
   if (verdict === 'ok') {
-    log.log('  ✅ Panel address answers ' + first[0].status + ' ✔');
+    log.log('  ' + ic('ok') + ' Panel address answers ' + first[0].status + ' ✔');
     return { ok: true, state: 'ok', healed: false, rebuilt: null };
   }
   if (verdict === 'propagating' || verdict === 'other' || verdict === 'partial') {
     if (verdict === 'partial') warn('Only some routes answer — the deploy itself is fine, so this looks like a panel-side issue on specific routes, not a broken deploy.');
     else {
       warn('The address did not answer within ' + Math.round(waitMs / 1000) + 's (' + (last.net || ('HTTP ' + last.status)) + ').');
-      console.log('  This does not mean the install failed: the uploaded bytes were verified against the');
-      console.log('  build that was produced here. On a filtered network workers.dev is simply unreachable.');
-      console.log('  Open the address from another network, or attach a custom domain at the last step.');
+      say('  This does not mean the install failed: the uploaded bytes were verified against the');
+      say('  build that was produced here. On a filtered network workers.dev is simply unreachable.');
+      say('  Open the address from another network, or attach a custom domain at the last step.');
     }
-    console.log('  💬 A brand-new address can take a minute or two to spread — the deploy itself was verified byte for byte.');
+    say('  💬 A brand-new address can take a minute or two to spread — the deploy itself was verified byte for byte.');
     return { ok: false, state: verdict === 'partial' ? 'partial' : 'unreachable', healed: false, rebuilt: null };
   }
   if (!canHeal) return { ok: false, state: verdict, healed: false, rebuilt: null };
@@ -1507,7 +1555,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   // (Also gated by canHeal: the post-heal re-check below must only look, never heal again.)
   if (verdict === 'binding') {
     warn('The panel answers but reports its database binding is missing — the edge has not picked up the D1 attachment yet.');
-    console.log('  💬 The panel reports its database binding is missing — re-attaching the same D1 database now (nothing is deleted).');
+    say('  💬 The panel reports its database binding is missing — re-attaching the same D1 database now (nothing is deleted).');
     await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
     const w = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
     if (w.verdict === 'ok') { ok('Binding fix worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
@@ -1523,7 +1571,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
       stuckWorkerHint();
       return { ok: false, state: verdict, healed: false, rebuilt: null };
     }
-    console.log('  💬 The panel answers but its integrity check trips — rebuilding this install with a fresh identity and re-uploading once.');
+    say('  💬 The panel answers but its integrity check trips — rebuilding this install with a fresh identity and re-uploading once.');
     const freshSeed = newSeed();
     const r = personalize(readFileSync(srcPath, 'utf8'), freshSeed);
     if (!r.ok) fail('The rebuilt copy did not match the original row-for-row: ' + r.problems.join(' / '),
@@ -1544,19 +1592,19 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   }
   // --- true 1101: Cloudflare's page, verified bytes. Delete the script once and redeploy.
   warn('Cloudflare itself answered "error code: 1101" on this address although the deployed bytes match the verified build.');
-  console.log('  That is the one-off deploy state on Cloudflare side. Redeploying the same file to the same');
-  console.log('  name does not clear it, so the wizard deletes the worker and uploads it once again.');
+  say('  That is the one-off deploy state on Cloudflare side. Redeploying the same file to the same');
+  say('  name does not clear it, so the wizard deletes the worker and uploads it once again.');
   // One clear line, so the owner understands exactly what happened and why:
   // Cloudflare hiccup on the fresh deploy (1101) → script recreated once, data untouched.
-  console.log('  💬 Cloudflare answered 1101 on a fresh deploy — the worker script is recreated once from the same verified bytes; your database, rows, address and domains are never touched.');
+  say('  💬 Cloudflare answered 1101 on a fresh deploy — the worker script is recreated once from the same verified bytes; your database, rows, address and domains are never touched.');
   const failedAt = new Date().toISOString();
-  console.log('  First failing probe (UTC): ' + failedAt);
-  console.log('  To read the exact exception behind a future 1101: dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs, around ' + failedAt.slice(0, 16).replace('T', ' ') + ' UTC.');
+  say('  First failing probe (UTC): ' + failedAt);
+  say('  To read the exact exception behind a future 1101: dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs, around ' + failedAt.slice(0, 16).replace('T', ' ') + ' UTC.');
   // Cheap fix first: the stuck state may live in this deploy *version* rather than the
   // script record, in which case a fresh version of the identical bytes clears it with
   // no delete at all (routes stay attached the whole time, so this is also faster).
   // Only if that fails does the wizard fall through to delete-and-recreate below.
-  console.log('  💬 Same bytes, new version first — re-uploading once without deleting anything…');
+  say('  💬 Same bytes, new version first — re-uploading once without deleting anything…');
   await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
   const retry = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
   if (retry.verdict === 'ok') { ok('Re-upload worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
@@ -1578,10 +1626,10 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const again = await verifyDeployment({ accountId, workerName, buildPath, dbId, dbName, subdomain, log: { log: () => {} }, canHeal: false });
   if (again.ok) { ok('Self-heal worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
   warn('Still not answering after one self-heal (' + again.state + '). The panel code is not the problem — the deployed bytes were verified.');
-  console.log('  (Failing since ' + failedAt + ' UTC — that timestamp plus Observability → Logs shows the exact exception.)');
+  say('  (Failing since ' + failedAt + ' UTC — that timestamp plus Observability → Logs shows the exact exception.)');
   stuckWorkerHint();
-  console.log('     You can also prove it in 10 seconds: run the installer once with a different worker name');
-  console.log('     (--no-fingerprint keeps the shared build) — the same bytes run fine on a clean script name.');
+  say('     You can also prove it in 10 seconds: run the installer once with a different worker name');
+  say('     (--no-fingerprint keeps the shared build) — the same bytes run fine on a clean script name.');
   return { ok: false, state: again.state, healed: true, rebuilt: null };
 }
 
@@ -1601,8 +1649,8 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
 async function primeFreshWorker({ accountId, workerName, buildPath, dbId, dbName }) {
   if (process.env.ZEUS_NO_PREWARM === '1') return false;
   const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 4000);
-  console.log('  💬 First install of this worker name — recreating the brand-new script once, now that its public route exists, before the first check.');
-  console.log('     (only the script this run just created is replaced; the database, its rows and the address are never touched)');
+  say('  💬 First install of this worker name — recreating the brand-new script once, now that its public route exists, before the first check.');
+  say('     (only the script this run just created is replaced; the database, its rows and the address are never touched)');
   const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
   if (!del.ok && !/10007/.test(String(del.errors))) {
     warn('Could not recreate the new script (' + del.errors + ') — keeping the first upload; the final check will still self-heal if Cloudflare answers 1101.');
@@ -1637,7 +1685,7 @@ async function main() {
   const rl = pipedLines ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
   activeRl = rl;
   const cleanup = () => { try { rl && rl.close(); } catch {} };
-  process.on('SIGINT', () => { console.log('\n\nCancelled.'); cleanup(); process.exit(130); });
+  process.on('SIGINT', () => { say('\n\nCancelled.'); cleanup(); process.exit(130); });
 
   // Saved defaults from an earlier run in this folder (identity + account + worker + D1)
   const profile = loadProfile() || {};
@@ -1647,10 +1695,10 @@ async function main() {
     warn('--no-fingerprint: the shared repository build is uploaded unchanged.');
   } else if (rotate || !profile.seed) {
     seed = newSeed();
-    if (profile.seed) console.log('  --rotate: this install gets a brand-new build identity.');
+    if (profile.seed) say('  --rotate: this install gets a brand-new build identity.');
   } else {
     seed = profile.seed;
-    console.log('  Reusing the build identity of your previous install (' + String(seed).slice(0, 8) + '…) — use --rotate for a new one.');
+    say('  Reusing the build identity of your previous install (' + String(seed).slice(0, 8) + '…) — use --rotate for a new one.');
   }
 
   // ---------- [1/10] token
@@ -1689,13 +1737,13 @@ async function main() {
       cleanup();
       return updateMain({ accountId, accountName, workerName: target.workerName });
     }
-    console.log('');
+    say('');
   }
 
   // ---------- [3/10] worker name
   nextStep('Worker name');
   const suggestedName = randName(8);
-  console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
+  say('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
   const workerName = (await ask(rl, 'Worker name', suggestedName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the suggested random name.');
 
@@ -1732,7 +1780,7 @@ async function main() {
     dbId = detected.dbId;
     dbName = detected.dbName || workerName + '-db';
     ok('Detected automatically — this worker is already bound to ' + dbName + ' (' + String(dbId).slice(0, 8) + '…)');
-    console.log('     reusing it as-is; every row it holds stays exactly as it is');
+    say('     reusing it as-is; every row it holds stays exactly as it is');
   } else {
     dbName = workerName + '-db';
     const listDb = await cf(`/accounts/${accountId}/d1/database?name=${encodeURIComponent(dbName)}`);
@@ -1752,8 +1800,8 @@ async function main() {
         const all = await cf(`/accounts/${accountId}/d1/database?per_page=50`);
         const free = (all.ok && all.data.result) || [];
         if (!free.length) fail('There is no database available to reuse.', 'Delete an old test database in the dashboard, then run this wizard again.');
-        console.log('  Existing databases in this account (nothing is deleted by this wizard):');
-        free.forEach((d, i) => console.log(`     ${i + 1}) ${d.name}`));
+        say('  Existing databases in this account (nothing is deleted by this wizard):');
+        free.forEach((d, i) => say(`     ${i + 1}) ${d.name}`));
         const pick = await ask(rl, 'Reuse which database number? (press Enter to stop here)', '');
         const chosen = pick ? free[parseInt(pick, 10) - 1] : null;
         if (!chosen) fail('No database chosen — the install stopped before any change.', 'Free a D1 slot in the dashboard and run the wizard again.');
@@ -1795,7 +1843,7 @@ async function main() {
     if (pre.code === '1101') warn('This worker address already answers "error code: 1101" right now — overwriting it with a fresh upload is the fix; the final check will confirm.');
     const overwrite = await ask(rl, `Worker "${workerName}" already exists; overwrite it? (y/n)`, 'y');
     if (overwrite.toLowerCase() !== 'y') fail('Cancelled by user.', 'Pick a different worker name if you do not want to replace it.');
-    console.log('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
+    say('     (only the script is replaced — D1 data, the workers.dev address and any attached domain are kept)');
   }
   const { fresh } = await uploadWorker(accountId, workerName, build.path, dbId, dbName);
 
@@ -1841,26 +1889,26 @@ async function main() {
     prof.names = health.rebuilt.names;
     prof.rows = health.rebuilt.rows;
     saveProfile(prof, true);
-    console.log('\n  Note: the panel kept tripping its integrity check, so the wizard rebuilt this');
-    console.log('  install with a brand-new identity and re-uploaded once. The database was never touched.');
+    say('\n  Note: the panel kept tripping its integrity check, so the wizard rebuilt this');
+    say('  install with a brand-new identity and re-uploaded once. The database was never touched.');
   }
   if (health.healed) {
     prof.healedAt = new Date().toISOString();
     saveProfile(prof, true);
-    console.log('\n  Note: Cloudflare reported error 1101 for this address, so the wizard recreated the');
-    console.log('  worker script once with the identical verified bytes. The database was never touched.');
+    say('\n  Note: Cloudflare reported error 1101 for this address, so the wizard recreated the');
+    say('  worker script once with the identical verified bytes. The database was never touched.');
   }
 
   if (COLOR) {
-    cardTop('🎉 Install complete  ·  ' + elapsed() + ' total');
+    cardTop(ic('party') + ' Install complete  ·  ' + elapsed() + ' total');
     cardRow();
-    cardRow(S.bold('📍 Panel address') + S.dim('  (open it first and set the admin password)'));
+    cardRow(S.bold(ic('pin') + ' Panel address') + S.dim('  (open it first and set the admin password)'));
     cardRow('   ' + S.cyan(S.under(panelUrl)));
     cardRow();
-    cardRow(S.bold('🔗 User subscription pattern'));
+    cardRow(S.bold(ic('link') + ' User subscription pattern'));
     cardRow('   ' + S.cyan(makeWorkerUrl(workerName, subdomain, '/sub/<username>')));
     cardRow();
-    cardRow(S.yellow('⚠️  First thing to do: ') + 'open the panel address and set the admin password.');
+    cardRow(S.yellow(ic('warn') + '  First thing to do: ') + 'open the panel address and set the admin password.');
     cardRow(S.dim('   Until a password exists the panel answers its own API without one —'));
     cardRow(S.dim('   that is the author\'s first-run design, so never leave a fresh install unclaimed.'));
     cardSep();
@@ -1873,21 +1921,21 @@ async function main() {
     cardRow(S.cyan('4') + '  The API token stays on this machine (.token.json) and is never uploaded.');
     cardEnd();
   } else {
-    console.log(`
+    say(`
 ${line}
-  🎉 Install complete!
+  ${ic('party')} Install complete!
 
-     📍 Panel address (open it first and set the admin password):
+     ${ic('pin')} Panel address (open it first and set the admin password):
         ${panelUrl}
 
-     🔗 User subscription pattern:
+     ${ic('link')} User subscription pattern:
         ${makeWorkerUrl(workerName, subdomain, '/sub/<username>')}
 
-  ⚠️  First thing to do: open the panel address above and set the admin password.
+  ${ic('warn')}  First thing to do: open the panel address above and set the admin password.
      Until a password exists the panel answers its own API without one — that is the
      author's first-run design, so do not leave a fresh install unclaimed.
 ${line}
-  ⚠️  Four important notes:
+  ${ic('warn')}  Four important notes:
       1. This deployment has its own build identity${build.names ? ' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)' : ''} — it is not
          byte-identical to anybody else's install of the same panel.
       2. If you ever use the "Update panel" button inside the panel, the author's own
@@ -1907,7 +1955,7 @@ ${line}`);
     let zoneId = '';
     let hostname = '';
     if (zones.ok && zones.data.result?.length) {
-      zones.data.result.forEach((z, i) => console.log(`     ${i + 1}) ${z.name}`));
+      zones.data.result.forEach((z, i) => say(`     ${i + 1}) ${z.name}`));
       const zi = parseInt(await ask(rl, 'Domain number', '1'), 10);
       const zone = zones.data.result[zi - 1];
       if (!zone) {
@@ -1918,8 +1966,8 @@ ${line}`);
       }
     } else {
       warn('Could not list zones — Zone:Read access is required for the list only.');
-      console.log('  You can still attach it now: open the Cloudflare dashboard, open your domain,');
-      console.log('  and copy the "Zone ID" from the right sidebar of the Overview page.');
+      say('  You can still attach it now: open the Cloudflare dashboard, open your domain,');
+      say('  and copy the "Zone ID" from the right sidebar of the Overview page.');
       zoneId = (await ask(rl, 'Zone ID (press Enter to skip and do it later from the dashboard)', '')).trim();
       if (zoneId && !/^[a-f0-9]{32}$/i.test(zoneId)) {
         warn('Zone ID format is invalid (32 hex characters); skipped.');
@@ -1940,7 +1988,7 @@ ${line}`);
         if (!cd.ok) warn('Domain attach failed (' + cd.errors + ') — from the dashboard: Worker → Settings → Domains');
         else {
           ok('Domain attached: https://' + hostname + '/panel');
-          console.log('     (DNS record and certificate are created automatically; allow a few minutes)');
+          say('     (DNS record and certificate are created automatically; allow a few minutes)');
           prof.hostname = hostname;
           prof.panelUrl = `https://${hostname}/panel`;
           prof.updatedAt = new Date().toISOString();
@@ -1952,7 +2000,7 @@ ${line}`);
   }
 
   cleanup();
-  console.log('\nDone. Good luck! 🌐');
+  say('\nDone. Good luck! 🌐');
 }
 
 // Source preparation without any token / Cloudflare network access (for testing)
@@ -1960,14 +2008,14 @@ async function prepareOnlyMain() {
   await loadPipedInput();
   const rl = pipedLines ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
   activeRl = rl;
-  console.log('Prepare-only mode: source preparation only\n');
+  say('Prepare-only mode: source preparation only\n');
   const src = await prepareSource(rl);
   const scan = scanKeywords(src.path);
-  console.log(`  File: ${src.path}`);
-  console.log(`  Size: ${(scan.size / 1024).toFixed(0)}KB | identifiable keywords: ${scan.hits}`);
+  say(`  File: ${src.path}`);
+  say(`  Size: ${(scan.size / 1024).toFixed(0)}KB | identifiable keywords: ${scan.hits}`);
   if (rl) rl.close();
   if (scan.hits > 0) { process.exitCode = 2; return; }
-  console.log('  ✅ Preparation successful');
+  say('  ' + ic('ok') + ' Preparation successful');
 }
 
 // ---------------------------------------------------------------- manual update
@@ -1997,7 +2045,7 @@ async function updateMain(opts = {}) {
   const rl = pipedLines ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
   activeRl = rl;
   const cleanup = () => { try { rl && rl.close(); } catch {} };
-  process.on('SIGINT', () => { console.log('\n\nCancelled.'); cleanup(); process.exit(130); });
+  process.on('SIGINT', () => { say('\n\nCancelled.'); cleanup(); process.exit(130); });
   bannerUpdate(profile);
   const noFingerprint = process.argv.includes('--no-fingerprint');
   const rotate = process.argv.includes('--rotate');
@@ -2034,7 +2082,7 @@ async function updateMain(opts = {}) {
     if (workerScripts.length > 1) {
       workerScripts.forEach((w, i) => {
         const isDef = w.id === profile.workerName;
-        console.log(`     ${i + 1}) ${w.id}${isDef ? '   (saved default)' : ''}`);
+        say(`     ${i + 1}) ${w.id}${isDef ? '   (saved default)' : ''}`);
       });
       const workerAns = (await ask(rl, 'Worker number to update', String(Math.max(1, workerScripts.findIndex((w) => w.id === profile.workerName) + 1)))).trim();
       const picked = workerScripts[parseInt(workerAns, 10) - 1];
@@ -2097,7 +2145,7 @@ async function updateMain(opts = {}) {
   }
   const before = await d1Snapshot(accountId, dbId);
   await ensureD1Ready(accountId, dbId, dbName);
-  if (before) console.log('     row census before: ' + Object.entries(before).map(([k, v]) => k + '=' + v).join(', '));
+  if (before) say('     row census before: ' + Object.entries(before).map(([k, v]) => k + '=' + v).join(', '));
   else warn('Row census not available with this token (D1 query) — the update never deletes data regardless.');
 
   // ---------- [4/6] source + identity
@@ -2114,7 +2162,7 @@ async function updateMain(opts = {}) {
     warn('--no-fingerprint: deploying the shared repository build.');
   } else {
     seed = newSeed();
-    console.log('  This update gets its own build identity (new key, row order and names)' + (rotate ? ' — --rotate was given.' : '.'));
+    say('  This update gets its own build identity (new key, row order and names)' + (rotate ? ' — --rotate was given.' : '.'));
   }
   const build = seed ? fingerprint(src.path, seed) : { path: src.path, names: null, rows: 0 };
 
@@ -2136,7 +2184,7 @@ async function updateMain(opts = {}) {
   const url = profile.hostname ? 'https://' + profile.hostname + '/panel' : makeWorkerUrl(workerName, subdomain, '/panel');
   const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain, srcPath: src.path, seed });
   if (COLOR) {
-    cardTop('🔄 Update complete  ·  ' + elapsed() + ' total');
+    cardTop(ic('up') + ' Update complete  ·  ' + elapsed() + ' total');
     cardRow();
     cardRow(S.dim('same database, same address, a brand-new build identity'));
     cardRow('   ' + S.cyan(S.under(url)));
@@ -2147,9 +2195,9 @@ async function updateMain(opts = {}) {
     cardRow(S.dim('worker script replaced — database, rows, address and domains untouched'));
     cardEnd();
   } else {
-    console.log(`
+    say(`
 ${line}
-  🔄 Update complete — same database, same address, a brand-new build identity:
+  ${ic('up')} Update complete — same database, same address, a brand-new build identity:
         ${url}
         ${health.ok ? 'responding now ✔' : 'not answered from this machine yet (a filtered network or route propagation; the deploy itself was verified byte for byte)'}
       ${build.names ? 'New build identity: ' + Object.values(build.names).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
@@ -2159,7 +2207,7 @@ ${line}`);
   const finalSeed = (health.rebuilt && health.rebuilt.seed) || seed || profile.seed;
   const finalNames = (health.rebuilt && health.rebuilt.names) || build.names || null;
   const finalRows = (health.rebuilt && health.rebuilt.rows) || build.rows || 0;
-  if (health.rebuilt) console.log('  Note: the panel kept tripping its integrity check, so this update rebuilt it with a brand-new identity. The database was never touched.');
+  if (health.rebuilt) say('  Note: the panel kept tripping its integrity check, so this update rebuilt it with a brand-new identity. The database was never touched.');
   saveProfile({
     ...profile,
     accountId, workerName, dbName, dbId, subdomain, panelUrl: url,
@@ -2170,7 +2218,7 @@ ${line}`);
     healedAt: health.healed ? new Date().toISOString() : (profile.healedAt || null),
   });
   cleanup();
-  console.log('\nDone. Good luck! 🌐');
+  say('\nDone. Good luck! 🌐');
 }
 
 // Build a private copy of the panel source without touching the Cloudflare API.
@@ -2181,8 +2229,8 @@ async function personalizeOnlyMain() {
   const profile = loadProfile();
   const rotate = process.argv.includes('--rotate');
   const seed = profile && profile.seed && !rotate ? profile.seed : newSeed();
-  console.log('Personalise-only mode: a private copy of the source, no Cloudflare calls\n');
-  console.log('  build identity seed: ' + seed + (profile && profile.seed && !rotate ? '   (from the saved profile)' : ''));
+  say('Personalise-only mode: a private copy of the source, no Cloudflare calls\n');
+  say('  build identity seed: ' + seed + (profile && profile.seed && !rotate ? '   (from the saved profile)' : ''));
   const src = await prepareSource(rl);
   const r = personalize(readFileSync(src.path, 'utf8'), seed);
   if (!r.ok) fail('Personalisation failed: ' + r.problems.join(' / '));
@@ -2191,22 +2239,22 @@ async function personalizeOnlyMain() {
   const chk = spawnSync(process.execPath, ['--check', out], { encoding: 'utf8' });
   if (chk.status !== 0) fail('The personalised copy failed a syntax check.', (chk.stderr || '').split('\n').slice(0, 3).join(' '));
   const scan = scanKeywords(out);
-  console.log('  rows re-keyed: ' + r.entries + ' | identifiers renamed: ' + Object.keys(r.names).length);
-  console.log('  new internal names: ' + Object.values(r.names).slice(0, 5).join(', ') + ' …');
-  console.log(`  ${out} (${(scan.size / 1024).toFixed(0)}KB, keyword survivors ${scan.hits}, syntax check passed)`);
+  say('  rows re-keyed: ' + r.entries + ' | identifiers renamed: ' + Object.keys(r.names).length);
+  say('  new internal names: ' + Object.values(r.names).slice(0, 5).join(', ') + ' …');
+  say(`  ${out} (${(scan.size / 1024).toFixed(0)}KB, keyword survivors ${scan.hits}, syntax check passed)`);
   if (rl) rl.close();
   if (scan.hits > 0) { process.exitCode = 2; return; }
-  console.log('  ✅ Personalised copy ready');
+  say('  ' + ic('ok') + ' Personalised copy ready');
 }
 
 function onUnhandled(e) {
   if (e && e.__zeusExit) return; // controlled exit from fail()
-  console.error(e && e.stack || e);
+  sayErr(e && e.stack || e);
   process.exitCode = 1;
 }
 
 if (typeof fetch !== 'function') {
-  console.error('❌ Node.js 18 or newer is required (fetch is not available in this version).');
+  sayErr(ic('cross') + ' Node.js 18 or newer is required (fetch is not available in this version).');
   process.exit(1);
 }
 
@@ -2225,13 +2273,13 @@ function looksImported() {
   }
 }
 
-export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, readWorkerD1, detectDatabaseFor, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, visWidth, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
+export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeywords, xorDecode, xorEncode, rngFrom, buildPrelude, fingerprint, uploadWorker, workerExists, readWorkerD1, detectDatabaseFor, deployedBytes, d1Snapshot, sameCensus, ensureD1Ready, settleDeploy, verifyDeployment, classifyProbe, classifyDeployment, probeOnce, probeRoute, probeAll, probeBase, loadProfile, saveProfile, makeTokenUrl, maskSecret, restoreTty, askSecret, ask, helpText, visWidth, MODERN, G, ICON, NAME_BLOCK_RE, KEYWORDS, KW_RE, FORK_SOURCES, PERM_GROUPS, PROFILE_VERSION, COMPAT_DATE, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS };
 
 // Help, so a first-time owner knows what every flag does before running it.
 function helpText() {
   return `
 ${line}
-    ⚡ Zeus Install Wizard — help
+    ${ic('bolt')} Zeus Install Wizard — help
 ${line}
     Usage:
       node wizard.mjs                 full interactive install
@@ -2261,7 +2309,7 @@ ${line}`;
 
 function helpStyled() {
   const cmd = (c, d) => cardRow(S.cyan(c.padEnd(32)) + S.dim(d));
-  cardTop('⚡ ZEUS  ·  Install Wizard  ·  help');
+  cardTop(ic('bolt') + ' ZEUS  ·  Install Wizard  ·  help');
   cardRow(S.bold('Usage') + S.dim('   node wizard.mjs [option]'));
   cardSep();
   cmd('(no option)', 'install or update — pick from the menus');
@@ -2288,7 +2336,7 @@ function helpStyled() {
   cmd('ZEUS_NO_PREWARM=1', 'skip the first-install route priming');
   cmd('FORCE_COLOR=1', 'keep colours even when piped');
   cardSep();
-  cardRow('🔒 ' + S.dim('Your token is saved only on this machine (.token.json) and never printed — it always shows as ••••••••.'));
+  cardRow(ic('lock') + ' ' + S.dim('Your token is saved only on this machine (.token.json) and never printed — it always shows as ••••••••.'));
   cardEnd();
 }
 
@@ -2308,77 +2356,77 @@ async function doctorMain() {
     cardTop('🩺 ZEUS  ·  Doctor');
     cardRow(S.dim('read-only diagnosis — nothing is changed or deleted'));
     cardEnd();
-    console.log('');
-  } else console.log('Doctor mode: read-only diagnosis, nothing is changed or deleted\n');
+    say('');
+  } else say('Doctor mode: read-only diagnosis, nothing is changed or deleted\n');
   await acquireToken(rl);
   let accountId = profile.accountId || '';
   if (!accountId) {
     const accounts = await cf('/accounts?per_page=50');
     if (!accounts.ok || !accounts.data.result?.length) fail('Could not list accounts with this token.', 'Pass an Account ID that this token can access.');
     accountId = accounts.data.result[0].id;
-    console.log('  Using account: ' + (accounts.data.result[0].name || accountId));
+    say('  Using account: ' + (accounts.data.result[0].name || accountId));
   }
   const workerName = (await ask(rl, 'Worker name', defWorker)).trim();
   if (!workerName) fail('No worker name given.', 'Run again as: node wizard.mjs --doctor <worker-name>.');
-  console.log('\n  ' + (COLOR ? S.bold(S.cyan('worker settings')) + S.dim('  ' + '─'.repeat(40)) : '--- worker settings ---'));
+  say('\n  ' + (COLOR ? S.bold(S.cyan('worker settings')) + S.dim('  ' + '─'.repeat(40)) : '--- worker settings ---'));
   const st = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
   if (!st.ok) fail('Could not read the worker settings (' + (st.errors || ('HTTP ' + st.status)) + ').', 'Check the worker name and that the token lists this account.');
   const res = st.data.result || {};
   const dateOk = (res.compatibility_date || '') >= REQUIRED_COMPAT_DATE;
   const flagsOk = REQUIRED_COMPAT_FLAGS.every((f) => (res.compatibility_flags || []).includes(f));
-  console.log('  compatibility_date : ' + (res.compatibility_date || '(none)') + (dateOk ? '  ✅' : '  ❌ older than the required ' + REQUIRED_COMPAT_DATE));
-  console.log('  compatibility_flags: ' + JSON.stringify(res.compatibility_flags || []) + (flagsOk ? '  ✅' : '  ❌ missing ' + REQUIRED_COMPAT_FLAGS.join(',')));
+  say('  compatibility_date : ' + (res.compatibility_date || '(none)') + (dateOk ? '  ' + ic('ok') : '  ' + ic('cross') + ' older than the required ' + REQUIRED_COMPAT_DATE));
+  say('  compatibility_flags: ' + JSON.stringify(res.compatibility_flags || []) + (flagsOk ? '  ' + ic('ok') : '  ' + ic('cross') + ' missing ' + REQUIRED_COMPAT_FLAGS.join(',')));
   const d1 = (res.bindings || []).find((b) => b && b.type === 'd1' && b.name === 'DB');
-  console.log('  D1 binding         : ' + (d1 ? ('DB -> ' + String(d1.id || d1.database_id || '').slice(0, 8) + '…  ✅') : 'NONE  ❌ the panel cannot work without it'));
+  say('  D1 binding         : ' + (d1 ? ('DB -> ' + String(d1.id || d1.database_id || '').slice(0, 8) + '…  ' + ic('ok')) : 'NONE  ' + ic('cross') + ' the panel cannot work without it'));
   if (profile.dbId && d1 && (d1.id || d1.database_id) !== profile.dbId) warn('The binding points at a different database than the saved profile (' + String(profile.dbId).slice(0, 8) + '…).');
   if (d1 && (d1.id || d1.database_id)) {
-    console.log('\n  ' + (COLOR ? S.bold(S.cyan('D1 database')) + S.dim('  ' + '─'.repeat(40)) : '--- D1 database ---'));
+    say('\n  ' + (COLOR ? S.bold(S.cyan('D1 database')) + S.dim('  ' + '─'.repeat(40)) : '--- D1 database ---'));
     const dl = await cf(`/accounts/${accountId}/d1/database/${d1.id || d1.database_id}`);
-    console.log('  database           : ' + (dl.ok ? dl.data.result.name + '  ✅' : 'LOOKUP FAILED ' + (dl.errors || dl.status)));
+    say('  database           : ' + (dl.ok ? dl.data.result.name + '  ' + ic('ok') : 'LOOKUP FAILED ' + (dl.errors || dl.status)));
     const census = await d1Snapshot(accountId, d1.id || d1.database_id);
-    console.log('  tables             : ' + (census ? Object.entries(census).map(([k, v]) => k + '=' + v).join(', ') + '  ✅' : 'query failed (token needs D1 query access)'));
+    say('  tables             : ' + (census ? Object.entries(census).map(([k, v]) => k + '=' + v).join(', ') + '  ' + ic('ok') : 'query failed (token needs D1 query access)'));
   }
-  console.log('\n  ' + (COLOR ? S.bold(S.cyan('deployed bytes')) + S.dim('  ' + '─'.repeat(40)) : '--- deployed bytes ---'));
+  say('\n  ' + (COLOR ? S.bold(S.cyan('deployed bytes')) + S.dim('  ' + '─'.repeat(40)) : '--- deployed bytes ---'));
   const back = await deployedBytes(accountId, workerName);
   if (!back.ok || !back.bytes) {
-    console.log('  Could not read the deployed script (' + (back.errors || ('HTTP ' + back.status)) + ').');
+    say('  Could not read the deployed script (' + (back.errors || ('HTTP ' + back.status)) + ').');
   } else {
     const txt = back.bytes.toString('utf8');
     const det = detectPrelude(txt);
-    console.log('  size               : ' + back.bytes.length + 'B' + (back.bytes.length > 800000 ? '  ✅' : '  ❌ looks incomplete — re-run the installer'));
-    console.log('  module export      : ' + (/export\s+default/.test(txt) ? 'present  ✅' : 'MISSING  ❌ the upload is damaged — re-run the installer'));
-    console.log('  payload table      : ' + (det ? det.blobs.length + ' rows, decoder ' + det.getName + '  ✅' : 'NOT FOUND  ❌ the upload is damaged — re-run the installer'));
+    say('  size               : ' + back.bytes.length + 'B' + (back.bytes.length > 800000 ? '  ' + ic('ok') : '  ' + ic('cross') + ' looks incomplete — re-run the installer'));
+    say('  module export      : ' + (/export\s+default/.test(txt) ? 'present  ' + ic('ok') : 'MISSING  ' + ic('cross') + ' the upload is damaged — re-run the installer'));
+    say('  payload table      : ' + (det ? det.blobs.length + ' rows, decoder ' + det.getName + '  ' + ic('ok') : 'NOT FOUND  ' + ic('cross') + ' the upload is damaged — re-run the installer'));
   }
-  console.log('\n  ' + (COLOR ? S.bold(S.cyan('routes')) + S.dim('  ' + '─'.repeat(40)) : '--- routes ---'));
+  say('\n  ' + (COLOR ? S.bold(S.cyan('routes')) + S.dim('  ' + '─'.repeat(40)) : '--- routes ---'));
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const probes = await probeAll(probeBase(workerName, subdomain));
   for (const p of probes) {
     const mark = p.code ? ('error code ' + p.code) : (p.net ? ('network: ' + p.net) : (p.text ? p.text.slice(0, 60) : ''));
-    console.log('  ' + p.path.padEnd(20) + String(p.status).padEnd(6) + mark);
+    say('  ' + p.path.padEnd(20) + String(p.status).padEnd(6) + mark);
   }
   const verdict = classifyDeployment(probes);
-  console.log('\n  verdict: ' + (COLOR ? (verdict === 'ok' ? S.green(S.bold(verdict)) : S.yellow(S.bold(verdict))) : verdict));
-  if (verdict !== 'ok') console.log('  Probed at (UTC): ' + new Date().toISOString() + ' — dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs around this time shows the exact exception.');
-  if (verdict === 'ok') console.log('  ✅ The panel answers every route — nothing to fix. If a browser still shows an error, hard-refresh (Ctrl+Shift+R) or check your VPN.');
-  else if (verdict === 'binding') console.log('  Next step: run `node wizard.mjs --update` and accept the saved database — the wizard re-attaches the D1 binding without deleting anything.');
-  else if (verdict === 'integrity') console.log('  Next step: run `node wizard.mjs --update --rotate` — the panel needs a freshly rebuilt identity, and your data stays in place.');
-  else if (verdict === 'stuck') console.log('  Next step: run `node wizard.mjs --update` — the wizard deletes only the worker script and redeploys the verified bytes; the database is never touched.');
-  else console.log('  Next step: wait a few minutes for the address to propagate, then run the doctor again. If it persists, attach a custom domain.');
+  say('\n  verdict: ' + (COLOR ? (verdict === 'ok' ? S.green(S.bold(verdict)) : S.yellow(S.bold(verdict))) : verdict));
+  if (verdict !== 'ok') say('  Probed at (UTC): ' + new Date().toISOString() + ' — dashboard → Workers & Pages → ' + workerName + ' → Observability → Logs around this time shows the exact exception.');
+  if (verdict === 'ok') say('  ' + ic('ok') + ' The panel answers every route — nothing to fix. If a browser still shows an error, hard-refresh (Ctrl+Shift+R) or check your VPN.');
+  else if (verdict === 'binding') say('  Next step: run `node wizard.mjs --update` and accept the saved database — the wizard re-attaches the D1 binding without deleting anything.');
+  else if (verdict === 'integrity') say('  Next step: run `node wizard.mjs --update --rotate` — the panel needs a freshly rebuilt identity, and your data stays in place.');
+  else if (verdict === 'stuck') say('  Next step: run `node wizard.mjs --update` — the wizard deletes only the worker script and redeploys the verified bytes; the database is never touched.');
+  else say('  Next step: wait a few minutes for the address to propagate, then run the doctor again. If it persists, attach a custom domain.');
   if (rl) rl.close();
 }
 
 if (looksImported()) {
   // module import: helpers only, no prompts, no network
 } else if (process.argv.includes('--help') || process.argv.includes('-h')) {
-  if (COLOR) helpStyled(); else console.log(helpText());
+  if (COLOR) helpStyled(); else say(helpText());
 } else if (process.argv.includes('--doctor')) {
   doctorMain().catch(onUnhandled);
 } else if (process.argv.includes('--token-link')) {
-  console.log('\n  Cloudflare API token-creation link (permissions pre-set + random name):\n');
-  console.log('  ' + S.cyan(makeTokenUrl()));
-  console.log('\n  Open it in a browser → Continue to summary → Create Token → copy the token.');
-  console.log('  Paste the token only into the wizard — it is never written to a file or a log.\n');
+  say('\n  Cloudflare API token-creation link (permissions pre-set + random name):\n');
+  say('  ' + S.cyan(makeTokenUrl()));
+  say('\n  Open it in a browser → Continue to summary → Create Token → copy the token.');
+  say('  Paste the token only into the wizard — it is never written to a file or a log.\n');
 } else if (process.argv.includes('--update')) {
   updateMain().catch(onUnhandled);
 } else if (process.argv.includes('--personalize')) {
