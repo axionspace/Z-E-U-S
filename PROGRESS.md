@@ -294,7 +294,9 @@ matters here: cfnew is a *single-node* script (one UUID, one path, config in KV)
 project is a **per-user D1 subscription factory** (one row per user → subscription links, QR,
 status page). A transport optimisation for a node is worth nothing to a config generator.
 
-**Adopted and implemented (each with a test in `tools/test-cfnew-wins.mjs`, 21 checks):**
+**Adopted and implemented (each with a test in `tools/test-ech-behaviour.mjs`, 21 checks;
+the file was called `test-cfnew-wins.mjs` until the two ECH suites were renamed to say what
+they test — see change 40):**
 * ECH fetch order **Google DoH first → Cloudflare DoH fallback**, on every subscription build,
   with a bounded `AbortSignal.timeout` (cfnew's "3.5 s no data → fall back" as an upper bound).
 * **ECH on ⇒ TLS-only ports**, one shared rule used by all three outputs.
@@ -354,8 +356,8 @@ on the same input produces a build of exactly the same size; only the random XOR
 
 | test | result |
 | --- | --- |
-| `tools/test-ech-wizard.mjs` (new) | **41 PASS / 0 FAIL** |
-| `tools/test-cfnew-wins.mjs` (new) | **21 PASS / 0 FAIL** |
+| `tools/test-ech-hardening.mjs` (new) | **41 PASS / 0 FAIL** |
+| `tools/test-ech-behaviour.mjs` (new) | **21 PASS / 0 FAIL** |
 | `tools/test-wizard-flows.mjs` | **129 PASS / 0 FAIL** |
 | `tools/test-personalize.mjs` | **104 PASS / 0 FAIL** |
 | `tools/live-ech-check.mjs` (new, live) | **31 PASS / 0 FAIL** |
@@ -384,8 +386,8 @@ covered by the offline tests plus the live run.
 | --- | --- | --- |
 | wizard flows | `node tools/test-wizard-flows.mjs` | **130 PASS / 0 FAIL** |
 | fingerprint lossless + name shape | `node tools/test-personalize.mjs` | **104 PASS / 0 FAIL** |
-| ECH survives hardening | `node tools/test-ech-wizard.mjs` | **41 PASS / 0 FAIL** |
-| cfnew wins (fetch order/timeout/cache/TLS-only) | `node tools/test-cfnew-wins.mjs` | **21 PASS / 0 FAIL** |
+| ECH survives hardening | `node tools/test-ech-hardening.mjs` | **41 PASS / 0 FAIL** |
+| ECH runtime behaviour (fetch order/timeout/cache/TLS-only) | `node tools/test-ech-behaviour.mjs` | **21 PASS / 0 FAIL** |
 | keyword scan | `Source-hardened.js`, `Source.js` | **0 keyword lines** (851 KB) |
 | `personalize()` reproducibility | from `wizard/profile.json` seed | two runs **byte-identical** (sha `34fc63229ef7a75e…`), `verifyTransform` ok, 90 rows / 14 renames, **sorted decoded row set == original set** |
 | decode benchmark | `node tools/bench-decode.mjs` | cold 5.04 ms, cached 54.5 ns — unchanged (nothing added to the request path) |
@@ -507,7 +509,7 @@ The PANEL product itself is intentionally untouched (its Farsi UI is the product
   helpers/constants/doctor + still exactly one DELETE in the wizard. Mock upgraded: probe
   answers all three routes per mode, settings reflect the last PUT's metadata, subdomain
   handler moved out of the unreachable block, `emptyDb` mode added.
-* `test-personalize` 104/0, `test-ech-wizard` 41/0, `test-cfnew-wins` 21/0 — unchanged, still green.
+* `test-personalize` 104/0, `test-ech-hardening` 41/0, `test-ech-behaviour` 21/0 — unchanged, still green.
 * `bench-decode`: cold ~7ms / cached ~77ns — no runtime change (all edits are deploy-time).
 * Live proof still owed: `node tools/live-update-check.mjs` + `--doctor` against a real
   1101 panel need `ZEUS_CF_TOKEN`, absent in this session. Owner: run
@@ -557,7 +559,7 @@ that the wiring comes from core `node:readline`. On the old code this fails with
 the owner's `TypeError`.
 
 ### Verification
-`test-wizard-flows` **170/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+`test-wizard-flows` **170/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0.
 Pushed to both `night-shift/2026-10-11` and `main` (fast-forward, no force); verified `main`
 serves the fixed wizard. Owner workaround no longer needed, but noted: setting
 `ZEUS_CF_TOKEN` in the environment skips the interactive token prompt entirely.
@@ -595,7 +597,7 @@ executes: the two one-command installers and the new `--doctor` mode.
   gate → fingerprint → upload → settings confirm → read-back → profile → probe →
   summary. (Box glyphs in some consoles are just missing emoji fonts.)
 * Piped-input,Zone-ID fallback, D1-cap, rotate, no-profile, census-fail paths all
-  covered green. Personalize 104/0, ECH 41/0, cfnew-wins 21/0, bench unchanged.
+  covered green. Personalize 104/0, ECH 41/0, ech-behaviour 21/0, bench unchanged.
 * Still not live-proven (no `ZEUS_CF_TOKEN` in this session): if the owner still sees
   failures, the single most useful artifact is the failing step's output or a
   `--doctor <worker>` transcript — that names the exact class.
@@ -646,7 +648,7 @@ returned token correctness, **zero pauses mid-run**, raw mode on-then-off. All w
 have failed on the old code (echo residue by construction, `pause: 1`).
 
 ### Verification
-`test-wizard-flows` **184/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+`test-wizard-flows` **184/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0.
 `wizard/wizard.mjs` re-synced. Pushed to both refs (fast-forward); verified `main`
 serves the fixed wizard (no `readline.emitKeypressEvents`, line-clear repaint
 present, still Farsi-free). Owner action: revoke the echoed token, re-run the
@@ -688,7 +690,7 @@ it and stop reusing stale breakage.
   the overwrite question → heal confirms → exactly one DELETE total.
 * S1 asserts the settle message; S8 asserts `settleDeploy`, `ZEUS_SETTLE_MS`, and the
   pre-flight advisory; harness sets `ZEUS_SETTLE_MS=100` so the suite stays fast.
-* `test-wizard-flows` **193/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+* `test-wizard-flows` **193/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0.
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
@@ -731,7 +733,7 @@ Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 ### Tests
 * S1 asserts the 30s fresh-worker message; S3 asserts the 12s existing-worker
   message; S6 (update that creates the worker) asserts 30s.
-* `test-wizard-flows` **196/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+* `test-wizard-flows` **196/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0.
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
@@ -772,7 +774,7 @@ Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
   S13 asserts the UTC timestamp + Observability pointer; S20b (new, 5 checks)
   runs the doctor against a sick worker and asserts verdict + timestamp + pointer
   while still read-only; S8 asserts the two-reads rule and the evidence lines.
-* `test-wizard-flows` **204/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+* `test-wizard-flows` **204/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0.
 * Scenario matrix now explicitly covers fresh names (S1), overwriting a stale
   1101 record (S21), and updates that keep vs create workers (S3/S4/S6) — the
   three real-world cases the owner named. The one thing mocks cannot cover is
@@ -820,7 +822,7 @@ heal with no delete at all.
 * S12/S13 updated to the new order (3 PUTs: initial + re-upload + post-delete
   redeploy, exactly 1 DELETE); S8 asserts the re-PUT-first text; DELETE count in
   the wizard is still exactly one.
-* `test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0.
+* `test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0.
 
 Files changed: `wizard/zeus-wizard.mjs`, `wizard/wizard.mjs` (re-sync),
 `tools/test-wizard-flows.mjs`.
@@ -835,7 +837,7 @@ re-apply, the middle heal rung (`Route fix worked`), the `detached-route` mock
 mode, S23, and the related S1/S8 assertions are all gone. What stays: English UI,
 re-PUT-first heal order (S22), 10s/5s settle pauses, per-verdict diagnosis,
 `--doctor`, evidence timestamps — i.e. the `aa8d87d` baseline, verified green
-(`test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, cfnew-wins 21/0).
+(`test-wizard-flows` **215/0**, personalize 104/0, ECH 41/0, ech-behaviour 21/0).
 Pushed to both refs (fast-forward). If the owner meant a different revert target
 (pre-English wizard, a live panel), say which — this revert is itself revertible.
 
@@ -849,7 +851,7 @@ Pushed to both refs (fast-forward). If the owner meant a different revert target
 3. **Probe target correctness**: `probeOnce` previously polled `/` instead of `/panel`. The root path `/` is a minimal decoy page, while `/panel` is the actual application interface. Polling `/panel` ensures health validation and self-healing trigger on the actual panel route.
 
 ### Verification & Account Cleanup
-- `test-wizard-flows` **215/0**, personalize **104/0**, ECH **41/0**, cfnew-wins **21/0**.
+- `test-wizard-flows` **215/0**, personalize **104/0**, ECH **41/0**, ech-behaviour **21/0**.
 - Account cleanup: all stray/test workers (`besstest`, `hyhyhyhy`, `web-veksu`, `webees`, `web-xjchh`) and their databases deleted via API. Only `web-panel` and `web-panel-db` preserved.
 - Live test: panel answers 200 OK (`تعریف رمز عبور پـنـل`).
 
@@ -962,4 +964,6 @@ Presentation only — no deploy, probe or self-heal logic changed (the plain, pi
 
 39. **The panel menu's `a` is a number too**: the "show every worker in this account" row was the one letter left after change 38, sitting right under a numbered list of panels. It is now the number after the last panel — two panels make it `3`, and the prompt reads `Panel [1-3]` — and it still reveals the full worker list, including the workers with no `DB` binding that the panel discovery deliberately skips. Once expanded the row is gone and the numbering re-runs over the whole list, so from then on every number means a real worker. The letter `a` is still accepted so nobody's muscle memory breaks. Regression scenario S25d drives it: two panels plus one bindingless worker, expanding by number, then selecting that worker by its new number and confirming the upload landed on it. A second assertion in S25 checks the expand row carries a number and that no letter row is offered anywhere in the panel menu.
 
-Verification: `test-wizard-flows` 302 / 0, ECH 41 / 0, cfnew-wins 21 / 0, plus two live runs against the real Cloudflare account — an update picked from the panel menu (fresh identity → 200 OK, database census identical before and after) and a re-install over an existing worker whose database does not follow the `<worker>-db` convention (detected from the binding, no second database created). Both consoles were rendered end to end and read line by line: every card rule measured exactly 59 cells, every `[n/m]` header matched the banner, and the classic run was byte-for-byte ASCII (install, update, `--help` and `--forget`). The numbered account menu was driven through a real forget-then-pick and an add-a-new-account run, and the store file was read back after each to confirm exactly one account was removed. The panel menu was driven through an expand-and-select run against a mock account holding two panels and one bindingless worker, and the upload was confirmed to land on the worker the number pointed at. The spinner was exercised in a real pseudo-terminal (10 frames, countdown, line cleared), and `--no-color` was run and checked. The account and panel menus were rendered against a mock Cloudflare API: numbered rows, no `❯`, each panel showing its real address and last-updated date.
+40. **The two ECH test files now say what they test**: neither name described its file. `test-cfnew-wins.mjs` was an ECH runtime test named after the study it was born from, and `test-ech-wizard.mjs` never touched the wizard at all — it is a static presence check on the shipped build. Renamed to `test-ech-behaviour.mjs` (does the surviving code behave correctly? the ECH block is extracted from the *shipped* build and executed against a stubbed fetch, so the fetch order, the bounded timeout, the per-build cache and the TLS-only rule are all under test) and `test-ech-hardening.mjs` (did the feature survive the hardening round-trip? every identifier, column, form field and emitted string, searched in both the served bytes and the decoded payload table). Each header now states its own scope and points at its sibling, and the one place the old name carried real information — that the behaviours came from cfnew study findings 1 and 3 — is written out in the header and in `analysis/CFNEW-STUDY.md` instead of being encoded in a filename. `docs/ECH.md` and every mention in this log carry the new names.
+
+Verification: `test-wizard-flows` 302 / 0, ECH 41 / 0, ech-behaviour 21 / 0 (both renamed suites re-run from their new paths), plus two live runs against the real Cloudflare account — an update picked from the panel menu (fresh identity → 200 OK, database census identical before and after) and a re-install over an existing worker whose database does not follow the `<worker>-db` convention (detected from the binding, no second database created). Both consoles were rendered end to end and read line by line: every card rule measured exactly 59 cells, every `[n/m]` header matched the banner, and the classic run was byte-for-byte ASCII (install, update, `--help` and `--forget`). The numbered account menu was driven through a real forget-then-pick and an add-a-new-account run, and the store file was read back after each to confirm exactly one account was removed. The panel menu was driven through an expand-and-select run against a mock account holding two panels and one bindingless worker, and the upload was confirmed to land on the worker the number pointed at. The spinner was exercised in a real pseudo-terminal (10 frames, countdown, line cleared), and `--no-color` was run and checked. The account and panel menus were rendered against a mock Cloudflare API: numbered rows, no `❯`, each panel showing its real address and last-updated date.

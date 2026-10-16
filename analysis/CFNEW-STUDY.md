@@ -108,7 +108,9 @@ scope here: this panel is not the transport, it is the config generator.
 
 * Adopted and implemented: **ECH (per user) + ECH domain + TLS-only auto-mode + ECH-config
   refresh with Google→Cloudflare fallback + `query-server-name` in Clash + a bounded SOCKS5
-  direct attempt.** Each has a test in `tools/test-cfnew-wins.mjs`.
+  direct attempt.** Each has a test in `tools/test-ech-behaviour.mjs` (the ECH fetch order,
+  timeout and cache, run against the shipped build's own code). The static half — that the
+  feature still exists in the build after hardening — is `tools/test-ech-hardening.mjs`.
 * Deliberately not adopted (with reasons above): GrainTCP transport coalescing, url-test removal,
   node renaming, single-page-admin polish, external sub-converter usage, a cross-request config
   cache.

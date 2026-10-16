@@ -12,12 +12,22 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
+import { existsSync } from 'node:fs';
 import { detectPrelude, personalize, xorDecode, checkHardened, KW_RE, NAME_BLOCK_RE } from '../wizard/wizard.mjs';
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const CANON = join(ROOT, 'Source-hardened.js');
+// The shipped build lives at the repository root. This fork keeps the readable copy there as
+// Source.js and the hardened one as Source-hardened.js next to it; a delivery folder that
+// carries only one of them must still work, so prefer whichever is present (Source.js is the
+// hardened build in the wizard's own layout — see prepareSource).
+const CANON = existsSync(join(ROOT, 'Source.js')) ? join(ROOT, 'Source.js') : join(ROOT, 'Source-hardened.js');
+// The plain, un-hardened upstream copy is the fixture for the two "must be rejected"
+// assertions below. It is deliberately never published (.gitignore lists analysis/Source.js),
+// so a checkout or worktree that does not carry it skips exactly those two checks instead of
+// crashing — the other 100+ assertions need nothing but the shipped build.
 const UPSTREAM = join(ROOT, 'analysis', 'Source.js');
+const HAS_UPSTREAM = existsSync(UPSTREAM);
 
 let pass = 0, fail = 0;
 const ok = (c, label, extra) => {
@@ -29,7 +39,8 @@ const src = readFileSync(CANON, 'utf8');
 // The ECH feature added one more encoded row; the test derives the count from the build
 // instead of hard-coding it, so adding a feature never makes the suite look broken.
 const CANON_ROWS_N = detectPrelude(readFileSync(CANON, 'utf8')).blobs.length;
-const up = readFileSync(UPSTREAM, 'utf8');
+const up = HAS_UPSTREAM ? readFileSync(UPSTREAM, 'utf8') : null;
+if (!HAS_UPSTREAM) console.log('note: ' + UPSTREAM + ' is absent — the two "plain upstream is rejected"\n      checks are skipped (the fixture is gitignored and never published).');
 const dir = mkdtempSync(join(tmpdir(), 'zeus-fp-'));
 
 console.log('canonical build : ' + src.length + ' chars | ' + (src.split('\n').length) + ' lines');
@@ -45,9 +56,13 @@ ok(N === 90, 'payload table has ' + CANON_ROWS_N + ' rows (the ECH feature added
 const plain0 = det.blobs.map((b) => xorDecode(b, det.key));
 ok(plain0.every((p) => typeof p === 'string' && p.length >= 0), 'every canonical row decodes to text');
 ok(plain0.filter((p) => KW_RE.test(p)).length > 0, 'decoded rows really do carry the protocol keywords', plain0.filter((p) => KW_RE.test(p)).length + ' rows');
-ok(detectPrelude(up) === null, 'detectPrelude does NOT match the plain upstream Source.js');
+if (HAS_UPSTREAM) {
+  ok(detectPrelude(up) === null, 'detectPrelude does NOT match the plain upstream Source.js');
+}
 ok(checkHardened(src).valid === true, 'checkHardened accepts the canonical build');
-ok(checkHardened(up).valid === false, 'checkHardened rejects the plain upstream build');
+if (HAS_UPSTREAM) {
+  ok(checkHardened(up).valid === false, 'checkHardened rejects the plain upstream build');
+}
 
 const callsCanonical = (src.match(/(?<![\w$])_G\(\s*\d+\s*\)/g) || []).length;
 ok(callsCanonical > 100, 'canonical build has decoder call sites to remap', String(callsCanonical));

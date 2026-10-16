@@ -37,8 +37,8 @@
 #
 # ------------------------------------------------------------------ verification
 #
-#   node tools/test-ech-wizard.mjs    # the feature survives hardening, end to end
-#   node tools/test-cfnew-wins.mjs    # the ECH fetch order, timeout and cache behaviour
+#   node tools/test-ech-hardening.mjs  # static: the feature survived the hardening round-trip
+#   node tools/test-ech-behaviour.mjs  # runtime: the fetch order, timeout and cache behaviour
 #   node tools/live-ech-check.mjs     # live, against a real deployment
 #
 # All three are offline-safe except the last one, which needs `ZEUS_CF_TOKEN` in the

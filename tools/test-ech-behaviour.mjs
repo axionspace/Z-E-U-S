@@ -1,13 +1,20 @@
-// test-cfnew-wins.mjs — the cfnew ideas that were actually adopted, each with a test.
-// The ECH code is extracted out of the SHIPPED hardened build (not from a source copy) and
-// executed here, so the test proves the deployed bytes behave the way the study says.
+// test-ech-behaviour.mjs — how the ECH feature BEHAVES at runtime, not just whether it is present.
+// test-ech-wizard.mjs proves the feature survived the hardening round-trip (do the identifiers,
+// columns and emitted strings still exist?). This file proves the surviving code does the right
+// thing when it runs: the ECH block is extracted out of the SHIPPED build (not from a source copy)
+// and executed here against a stubbed fetch, so the deployed bytes are what is under test.
 //   • ECH is fetched per subscription build, Google DoH first, Cloudflare as fallback
 //   • ECH off means no network call at all (zero cost for users who do not use it)
 //   • a failing resolver falls through to the next one and still returns a config
 //   • the per-build cache never survives across builds
 //   • ECH on ⇒ TLS-only port set (the shared rule in both outputs)
-//   • a bounded SOCKS5/direct attempt cannot stall the build (cfnew's 3.5 s downgrade rule,
-//     applied as an upper bound on the ECH lookup itself)
+//   • a bounded SOCKS5/direct attempt cannot stall the build (a hard upper bound on the
+//     ECH lookup itself, so an unreachable resolver can never hold a subscription build open)
+//
+// The behaviours and the DoH fallback order come from the cfnew study
+// (analysis/CFNEW-STUDY.md, findings 1 and 3); the reasons each idea was adopted are there.
+// That study-was-the-origin history is why this file was once called test-cfnew-wins.mjs — a name
+// that said nothing about what it tests, since it is an ECH test like its sibling above.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

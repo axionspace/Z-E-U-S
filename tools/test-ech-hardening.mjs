@@ -1,4 +1,9 @@
-// Phase-6 verification: does the ECH feature survive the hardening round-trip?
+// test-ech-hardening.mjs — did the ECH feature SURVIVE the hardening round-trip?
+// This is a static presence check on the shipped build: every identifier, column, form field
+// and emitted string the feature needs must still be there after harden.mjs has moved the
+// protocol-identifying strings into the payload table. It does not run any panel code.
+// test-ech-behaviour.mjs is the sibling that runs it — it extracts the ECH block and executes
+// it against a stubbed fetch to prove the fetch order, timeout and cache actually behave.
 // Searches BOTH the served bytes (real code: identifiers, non-keyword string literals) and
 // the decoded payload table (quasis / keyword-bearing literals), because harden.mjs only
 // moves protocol-identifying strings into the table.
