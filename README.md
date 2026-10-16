@@ -149,7 +149,9 @@ irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.ps1
 * **8-Letter Stealth Naming**: Generates high-entropy 8-character random worker names (`[a-z]{8}`, over 208 billion combinations), providing complete immunity against automated scanner sweeps while keeping QR codes crisp and easy to scan.
 * **Modern Terminal UI**: Features sleek boxed cards, progress tracking, live countdown spinners on long waits, safe CP437 fallbacks for legacy Windows consoles (`cmd.exe`), and a flicker-free secret token prompt.
 * **Per-User ECH Support**: Integrated Encrypted Client Hello configuration with Google and Cloudflare DoH fallback resolvers across VLESS, Trojan, Clash, and sing-box subscriptions.
-* **Safe Updates**: Re-deploy anytime with `node zeus-wizard/wizard.mjs --update` to restore your private build without touching D1 database rows, user subscriptions, or custom domain mappings.
+* **Safe Updates with a Fresh Identity**: Re-deploy anytime with `node zeus-wizard/wizard.mjs --update` — the account and the live panels are listed by number, and the chosen worker is rebuilt with a **brand-new build fingerprint generated exactly like an install**, so no two deployments of yours ever share the same bytecode. The D1 database, its rows, user subscriptions, the workers.dev address and any custom domain mapping are never touched.
+* **Saved Accounts with a Numbered Menu**: The API token is stored per-user under `~/.zeus-wizard/accounts.json` (readable only by your own account, `0600`) with the Cloudflare account name, so the next run is just "pick account 1, pick panel 1". Install and update share one interface; nothing is ever auto-deleted. `--forget` removes every saved token.
+* **Automatic D1 Detection**: The wizard reads the worker's own settings first and reuses the database bound as `DB` before ever creating one, so re-runs and updates always land on the same database — and hitting the account's database cap is handled by reusing an existing one, never by deleting.
 
 ---
 
@@ -161,7 +163,9 @@ Append flags to the install command or pass them directly when running the wizar
 | --- | --- |
 | `--token-link` | Prints only the pre-configured API token-creation link (random name) |
 | `--doctor [worker]` | Read-only diagnosis of worker settings, D1 bindings, bytecode integrity, and route availability |
-| `--update` | Manual update with saved defaults (preserves database, users, and identity) |
+| `--install` | Skips the choice menu and goes straight to installing a new panel |
+| `--update` | Manual update: pick the account and the worker from numbered lists (preserves database and users) |
+| `--forget` | Deletes the API tokens saved on this computer |
 | `--rotate` | Generates a brand-new build identity and encryption seed |
 | `--no-fingerprint` | Deploys the shared repository build unchanged without local personalization |
 | `--prepare-only` | Downloads and validates the panel source locally without any Cloudflare calls |
