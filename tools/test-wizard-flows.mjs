@@ -165,6 +165,11 @@ function startMock(opt = {}) {
           const name = decodeURIComponent(m[1]);
           if (method === 'GET' && m[2] === '/settings') {
             if (!state.scripts[name]) return json(404, errEnv(10007, 'script_not_found'));
+            // A worker named in noBindingFor is a plain worker with no D1 binding, so the
+            // wizard's panel discovery must skip it and only the expanded list may show it.
+            if (opt.noBindingFor && opt.noBindingFor.includes(name)) {
+              return json(200, okEnv({ bindings: [], compatibility_date: '2026-07-10' }));
+            }
             // Like the real API, report the metadata of the last PUT when there is one —
             // the wizard polls this to confirm the D1 binding, date and flags landed.
             const md = state.scripts[name].metadata;
@@ -802,6 +807,36 @@ try {
     check(r.out.includes('Update complete'), 'S25 update completed successfully');
     const put = state.puts[0];
     check(!!put && put.name === 'panel-existing', 'S25 updated the chosen worker', put && put.name);
+    // "show every worker" is the number after the last panel, not the letter "a".
+    const txt25 = uncolor(r.out);
+    check(/[│|]\s+2\s+show every worker/.test(txt25), 'S25 the expand row carries the next number instead of "a"', txt25.slice(-900));
+    check(/Panel \[1-2\]/.test(txt25), 'S25 the prompt offers the whole range including the expand row');
+    check(!/show every worker.*\n.*\ba\b\s+show/.test(txt25), 'S25 no letter row is offered');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S25d the expand number reveals every worker
+  console.log('• S25d the last number lists every worker, including ones with no database');
+  {
+    cleanStore(); rmSync(profPath, { force: true });
+    writeFileSync(tokenPath, JSON.stringify({ tokens: [{ token: TOKEN, accountId: ACCOUNT_ID, accountName: 'Primary Account' }] }));
+    const { server, state, port } = await startMock({
+      // Two panels (with a DB binding) and one plain worker (no binding) that only the
+      // expanded list can show. `settings` is what the non-PUT path reports.
+      scripts: { 'panel-a': { bytes: Buffer.from(CANON), metadata: null }, 'panel-b': { bytes: Buffer.from(CANON), metadata: null }, 'plain-relay': { bytes: Buffer.from(CANON), metadata: null } },
+      dbs: [{ name: 'panel-a-db', uuid: DB_UUID }],
+      settings: { bindings: [{ type: 'd1', name: 'DB', id: DB_UUID }], compatibility_date: '2026-07-10' },
+      noBindingFor: ['plain-relay'],
+    });
+    // account 1 -> update (1) -> the expand number (3) -> then plain-relay is number 3 again
+    const r = await run(root, port, ['--test-saved-token', '--test-panels-menu'], ['1', '1', '3', '3', '']);
+    const txt = uncolor(r.out);
+    check(!r.fatal && r.code === 0, 'S25d exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2000));
+    check(/Panel \[1-3\]/.test(txt), 'S25d two panels make the expand row number 3');
+    check(/plain-relay/.test(txt), 'S25d the expanded list includes the worker with no D1 binding');
+    const put = state.puts[state.puts.length - 1];
+    check(!!put && put.name === 'plain-relay', 'S25d the plain worker can then be selected by its number', put && put.name);
     server.close();
     console.log('');
   }

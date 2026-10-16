@@ -1755,6 +1755,9 @@ async function updateFlow(rl, ctx) {
   let showingAll = false;
   let pick = null;
   for (;;) {
+    // "show every worker" is a row like any other: the number after the last panel.
+    // Nothing here is a letter, so one rule answers every menu in the wizard.
+    const expand = list.length + 1;
     cardTop(ic('up') + ' Choose the panel to update');
     list.forEach((w, i) => {
       if (i) cardRow('');
@@ -1764,19 +1767,21 @@ async function updateFlow(rl, ctx) {
     });
     if (!showingAll) {
       cardSep();
-      cardRow('  ' + S.cyan(' a') + '  ' + S.dim('show every worker in this account (if your panel is not listed)'));
+      cardRow('  ' + S.cyan(String(expand).padStart(2)) + '  ' + S.dim('show every worker in this account (if your panel is not listed)'));
     }
     cardEnd();
-    const pLabel = list.length > 1 ? `Panel [1-${list.length}]${showingAll ? '' : ' or a'}` : (list.length ? 'Panel [1]' : 'Panel (press a)');
-    const ans = (await ask(rl, pLabel, list.length ? '1' : 'a')).trim().toLowerCase();
-    if (ans === 'a' && !showingAll) {
+    const top = showingAll ? list.length : expand;
+    const pLabel = list.length ? `Panel [1-${top}]` : `Panel [${top}]`;
+    const ans = (await ask(rl, pLabel, list.length ? '1' : String(expand))).trim().toLowerCase();
+    const num = parseInt(ans, 10);
+    if (!showingAll && (num === expand || ans === 'a')) {
       list = all; showingAll = true;
       if (!list.length) fail('This account has no workers.', 'Run the wizard again and choose "Install a new panel".');
       continue;
     }
-    pick = list[parseInt(ans, 10) - 1];
+    pick = list[num - 1];
     if (pick) break;
-    warn('Type one of the numbers listed above' + (showingAll ? '.' : ' or a.'));
+    warn(`Type a number from 1 to ${top}${showingAll ? '.' : ` (${expand} lists every worker).`}`);
   }
   let dbId = pick.dbId;
   if (!dbId) {
