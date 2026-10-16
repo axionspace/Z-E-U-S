@@ -21,7 +21,7 @@
 // files, PR #16 closed, live panel health, pinned-sha byte equality for EVERY route in
 // the shipped download chains, deployed CF worker byte-equality.
 // Usage: GH_TOKEN=<t> CF_TOKEN=<t?> node tools/verify-fork.mjs
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { createHash } from 'crypto';
 import { detectPrelude, xorDecode } from '../wizard/wizard.mjs';
 
@@ -54,9 +54,15 @@ const ok = (cond, label, extra = '') => { console.log((cond ? 'PASS' : 'FAIL') +
 
 (async () => {
 	// ---- 1) local reference build ----
-	const local = readFileSync(new URL('../Source-hardened.js', import.meta.url));
+	// The shipped build is Source.js at the repo root in this layout (Source-hardened.js in a
+	// delivery folder). NOTE: this script is a one-off Phase-7 audit pinned to a specific past
+	// commit chain, build size and repo state, kept for the record rather than run as a routine
+	// suite — its numeric assertions describe that moment. Resolving the file by either name at
+	// least keeps it from crashing before it can report which of them still hold.
+	const localPath = existsSync(new URL('../Source.js', import.meta.url)) ? new URL('../Source.js', import.meta.url) : new URL('../Source-hardened.js', import.meta.url);
+	const local = readFileSync(localPath);
 	const localTxt = local.toString('utf8');
-	ok(local.length === 855815, 'local hardened build size = 855,815B', local.length + 'B');
+	ok(local.length === 855815, 'local hardened build size = 855,815B (historical: held at the audited commit)', local.length + 'B');
 	ok(countSurv(localTxt) === 0, 'local hardened build: 0 keyword survivors', countSurv(localTxt) + ' found');
 	ok(localTxt.includes('const _ZK') && localTxt.includes('function _G'), 'local hardened build: _ZK/_G runtime table present');
 	const localWiz = readFileSync(new URL('../wizard/wizard.mjs', import.meta.url));

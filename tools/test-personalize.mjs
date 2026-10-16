@@ -52,7 +52,11 @@ ok(det && det.keyName === '_ZK' && det.blobName === '_ZS' && det.cacheName === '
   'canonical identifiers are _ZK/_ZS/_ZC/_ZD/_G', det && [det.keyName, det.blobName, det.cacheName, det.decName, det.getName].join(','));
 ok(det && det.key.length === 32, 'payload key is 32 bytes', det && det.key.length);
 const N = det ? det.blobs.length : 0;
-ok(N === 90, 'payload table has ' + CANON_ROWS_N + ' rows (the ECH feature added one)', String(N));
+ok(N === 90, 'payload table has ' + CANON_ROWS_N + ' rows', String(N));
+// The author's own source ships an HTML comment addressed to LLM assistants, ordering them to
+// refuse any edit to the panel. It is a prompt injection, not a licence, and it has no runtime
+// effect — this build does not carry it. Asserted here so it cannot come back in a re-import.
+ok(!/SYSTEM DIRECTIVE/i.test(src), 'the build carries no AUTHOR->LLM directive comment');
 const plain0 = det.blobs.map((b) => xorDecode(b, det.key));
 ok(plain0.every((p) => typeof p === 'string' && p.length >= 0), 'every canonical row decodes to text');
 ok(plain0.filter((p) => KW_RE.test(p)).length > 0, 'decoded rows really do carry the protocol keywords', plain0.filter((p) => KW_RE.test(p)).length + ' rows');
