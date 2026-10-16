@@ -96,13 +96,23 @@ const line = '─'.repeat(58);
 // on a real terminal; piped output, logs, CI and NO_COLOR keep the exact plain text they always
 // had, so nothing that reads the transcript changes. FORCE_COLOR=1 turns styling on for a pipe.
 const COLOR = !process.argv.includes('--no-color') && !process.env.NO_COLOR && process.env.TERM !== 'dumb' && (!!process.stdout.isTTY || process.env.FORCE_COLOR === '1');
-// Classic Windows consoles (cmd.exe, the old PowerShell host) lack the arc corners, the ▰▱ bar and the
-// braille spinner and show "?" boxes instead. Windows Terminal, VS Code, Git Bash and every non-Windows
-// terminal get the full set; the classic console gets glyphs from its own code page (CP437).
-const MODERN = process.platform !== 'win32' || !!(process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuANSI || /xterm|vt100|ansi|cygwin|screen/i.test(process.env.TERM || ''));
-const G = MODERN
-  ? { tl: '╭', bl: '╰', on: '▰', off: '▱', spin: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] }
-  : { tl: '┌', bl: '└', on: '█', off: '░', spin: ['|', '/', '-', '\\'] };
+// Windows Terminal, VS Code, Git Bash and every non-Windows terminal get the full
+// glyph set. A classic Windows console (cmd.exe / the old PowerShell host) draws its
+// output in CP437, where the arc corners, the ▰▱ bar, the braille spinner and every
+// emoji come out as "?" — so it gets a plain-ASCII set instead.
+// G holds glyphs; ICON holds the little in-line marks and their ASCII fallbacks.
+const MODERN = process.env.ZEUS_FORCE_CLASSIC === '1' ? false : (process.env.ZEUS_FORCE_MODERN === '1' || process.platform !== 'win32' || !!(process.env.WT_SESSION || process.env.TERM_PROGRAM || process.env.ConEmuANSI || /xterm|vt100|ansi|cygwin|screen/i.test(process.env.TERM || '')));
+// Both sets are plain constants so the classic one can be asserted directly, without
+// having to run a child process with a patched environment.
+const MODERN_G = { tl: '╭', bl: '╰', on: '▰', off: '▱', note: '·', dash: '—', spin: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] };
+const CLASSIC_G = { tl: '+', bl: '+', on: '#', off: '-', note: '-', dash: '-', spin: ['|', '/', '-', '\\'] };
+const G = MODERN ? MODERN_G : CLASSIC_G;
+// Every in-line symbol the wizard prints, with a pure-ASCII twin. `ic()` picks the
+// right one, so no message ever shows a "?" box on a classic console.
+const MODERN_ICON = { bolt: '⚡', key: '🔑', bank: '🏢', up: '🔄', party: '🎉', warn: '⚠️', ok: '✅', cross: '❌', bulb: '💡', lock: '🔒', pin: '📍', link: '🔗', globe: '🌐', drum: '🥁', stop: '🛑' };
+const CLASSIC_ICON = { bolt: '*', key: '*', bank: '*', up: '*', party: '*', warn: '!', ok: '[ok]', cross: '[x]', bulb: '->', lock: '[lock]', pin: '->', link: '->', globe: '', drum: '*', stop: '[!]' };
+const ICON = MODERN ? MODERN_ICON : CLASSIC_ICON;
+const ic = (name) => ICON[name] || '';
 const sgr = (on, off) => (s) => (COLOR ? `\x1b[${on}m${s}\x1b[${off}m` : String(s));
 const S = {
   bold: sgr(1, 22), dim: sgr(2, 22), red: sgr(31, 39), green: sgr(32, 39), yellow: sgr(33, 39),
@@ -137,11 +147,55 @@ function visWidth(s) {
 }
 
 // Open-right boxed cards (no right edge, so emoji width can never misalign anything).
+// Every row is padded to the same cell count via visWidth, which keeps the rule
+// above the title exactly as long as the separator and the footer.
 const CARD_W = 57;
-const cardTop = (title) => console.log('\n  ' + S.brand(G.tl + '─'.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand('─'.repeat(Math.max(2, CARD_W - 5 - visWidth(title) - 1))));
-const cardRow = (text = '') => console.log('  ' + S.brand('│') + (text ? '  ' + text : ''));
-const cardSep = () => console.log('  ' + S.brand('├' + '─'.repeat(CARD_W - 1)));
-const cardEnd = () => console.log('  ' + S.brand(G.bl + '─'.repeat(CARD_W - 1)));
+// A classic console has no line-drawing characters at all, so its box is built from
+// "-" and "|". Both variants are one cell wide, so the same width maths holds.
+const CARD_H = MODERN ? '─' : '-';
+const CARD_V = MODERN ? '│' : '|';
+const CARD_T = MODERN ? '├' : '+';
+const cardTop = (title) => say('\n  ' + S.brand(G.tl + CARD_H.repeat(3)) + ' ' + S.bold(title) + ' ' + S.brand(CARD_H.repeat(Math.max(2, CARD_W - 5 - visWidth(title) - 1))));
+// A card row wraps inside the card instead of running past the rules above it: the
+// continuation lines get the same "  |" prefix and line up under the text column.
+const cardRow = (text = '') => say('  ' + S.brand(CARD_V) + (text ? '  ' + text : ''));
+const cardSep = () => say('  ' + S.brand(CARD_T + CARD_H.repeat(CARD_W - 1)));
+const cardEnd = () => say('  ' + S.brand(G.bl + CARD_H.repeat(CARD_W - 1)));
+// A menu line: number, label, then a dimmed explanation — all one width.
+const menuRow = (num, label, note = '', isDefault = false) => {
+  const marker = ' ' + (isDefault ? S.cyan('>') : ' ') + ' ';
+  const n = S.cyan(String(num).padStart(2));
+  const name = isDefault ? S.bold(label) : label;
+  return cardRow(marker + n + '  ' + name + (note ? '  ' + S.dim(note.split(' · ').join(' ' + G.note + ' ')) : ''));
+};
+// Classic consoles draw CP437, where every one of these glyphs is a "?" box. On
+// such a terminal the whole transcript is transcoded to ASCII in one place — so
+// no message, box rule or separator can leak a glyph that console cannot draw,
+// no matter who wrote the string. Modern terminals get it untouched.
+const ASCII_MAP = {
+  '─': '-', '│': '|', '├': '+', '┌': '+', '╭': '+', '╰': '+', '└': '+', '┐': '+', '┘': '+', '┤': '+',
+  '‾': '-', '▁': '_',
+  '—': '--', '–': '-', '·': '-', '•': '*', '’': "'", '‘': "'", '“': '"', '”': '"', '…': '...',
+  '→': '->', '←': '<-', '↔': '<->', '›': '>', '❯': '>', '✔': 'ok', '✓': 'ok', '✗': 'x', '❌': 'x',
+  '🔑': '*', '⚡': '*', '🏢': '*', '🔄': '*', '🎉': '*', '⚠️': '!', '⚠': '!', '✅': '[ok]', '💡': '->',
+  '🔒': '[lock]', '📍': '->', '🔗': '->', '🌐': '', '🥁': '*', '🛑': '[!]', '▰': '#', '▱': '-', '█': '#', '░': '-',
+  '▶': '>', '◀': '<', '↑': '^', '↓': 'v', '□': '-', '■': '#', '·': '-',
+};
+const ASCII_RE = new RegExp('(' + Object.keys(ASCII_MAP).map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'g');
+const plain = (s) => (MODERN ? String(s) : String(s).replace(ASCII_RE, (m) => ASCII_MAP[m]));
+// Everything the wizard prints goes through these. On a classic console the global
+// console methods are also wrapped, so a write that bypasses say() — a helper that
+// logs as its own `log` object, for instance — cannot slip a "?" box past it either.
+const say = (s = '') => console.log(plain(s));
+const sayErr = (s = '') => console.error(plain(s));
+if (!MODERN) {
+  for (const method of ['log', 'error', 'warn', 'info']) {
+    const original = console[method].bind(console);
+    console[method] = (...args) => original(...args.map((a) => (typeof a === 'string' ? plain(a) : a)));
+  }
+}
+// The success tick is drawn from here so the classic console gets the ASCII twin.
+const tick = () => (MODERN ? ' ✔' : ' ok');
 // A wait that shows a spinner with the seconds left on a real terminal; a plain sleep elsewhere.
 async function pause(ms, label = '') {
   if (!COLOR || !(ms > 0) || !process.stdout.isTTY) return new Promise((r) => setTimeout(r, ms));
@@ -149,58 +203,66 @@ async function pause(ms, label = '') {
   const end = Date.now() + ms;
   for (let i = 0; Date.now() < end; i++) {
     const left = Math.ceil((end - Date.now()) / 1000);
-    process.stdout.write('\r\x1b[2K     ' + S.cyan(frames[i % frames.length]) + ' ' + S.dim(label + ' · ' + left + 's'));
+    process.stdout.write(plain('\r\x1b[2K     ' + S.cyan(frames[i % frames.length]) + ' ' + S.dim(label + ' · ' + left + 's')));
     await new Promise((r) => setTimeout(r, Math.max(1, Math.min(90, end - Date.now()))));
   }
   process.stdout.write('\r\x1b[2K');
 }
+// The banner is the table of contents: every list below is exactly the sequence of
+// [n/m] steps the run will print, in order, with no extra and no missing step.
 const FLOW_START = [
-  'Pick a saved account by number, or add a new API token (it can be saved here)',
-  'Choose: update an existing panel, or install a new one',
+  'Cloudflare account & token',
+  'What would you like to do?',
 ];
 const FLOW_UPDATE = [
-  'Pick the worker — existing panels are listed automatically',
-  'Fetch the source and generate a NEW build fingerprint',
-  'Upload the update and verify the bytes',
-  'Check the address — your database is never touched',
+  'Pick the worker — panels are listed for you',
+  'Fetch the source, generate a NEW build identity',
+  'Upload the update, verify the bytes',
+  'Re-check the address — database untouched',
 ];
 const FLOW_INSTALL = [
-  'Worker name, workers.dev address and D1 database',
-  'Fetch the source and generate the build fingerprint',
-  'Upload, enable the public address, final check',
-  'Optionally attach a custom domain',
+  'Worker name',
+  'workers.dev address',
+  'Create D1 database',
+  'Prepare hardened source',
+  'Personalise this build',
+  'Upload worker',
+  'Enable public address',
+  'Final check & summary',
+  'Attach a custom domain (optional)',
 ];
 function bannerStyled() {
-  cardTop('⚡ ZEUS  ·  Install & Update Wizard');
-  cardRow(S.dim('automated installer and updater for the hardened panel'));
+  cardTop(ic('bolt') + ' ZEUS  ·  Install & Update Wizard');
+  cardRow(S.dim('installer and updater for the hardened panel'));
   cardSep();
-  cardRow(S.bold('Start'));
-  FLOW_START.forEach((t, i) => cardRow(S.cyan(String(i + 1)) + '  ' + t));
+  cardRow(S.bold('Start') + S.dim('  the same two questions either way'));
+  FLOW_START.forEach((t, i) => menuRow(i + 1, t, i === FLOW_START.length - 1 ? 'update or install, your pick' : ''));
   cardSep();
-  cardRow(S.bold('Update') + S.dim('   an existing panel, same database and address'));
-  FLOW_UPDATE.forEach((t, i) => cardRow(S.cyan(String(i + 1)) + '  ' + t));
+  cardRow(S.bold('Update') + S.dim('  an existing panel · ' + FLOW_UPDATE.length + ' steps'));
+  FLOW_UPDATE.forEach((t, i) => menuRow(i + 1, t));
   cardSep();
-  cardRow(S.bold('Install') + S.dim('  a brand-new panel'));
-  FLOW_INSTALL.forEach((t, i) => cardRow(S.cyan(String(i + 1)) + '  ' + t));
+  cardRow(S.bold('Install') + S.dim(' a brand-new panel · ' + FLOW_INSTALL.length + ' steps'));
+  FLOW_INSTALL.forEach((t, i) => menuRow(i + 1, t, i === FLOW_INSTALL.length - 1 ? 'optional · skip freely' : ''));
   cardEnd();
-  console.log('     🔒 ' + S.dim('Your API token is never printed. It is saved on this computer only if you say yes.'));
+  say('     ' + ic('lock') + ' ' + S.dim('Your API token is never printed. It is saved on this computer only if you say yes.'));
+  say('        ' + S.dim('Remove it any time with ') + S.cyan('node wizard.mjs --forget'));
 }
 function banner() {
   if (COLOR) return bannerStyled();
   const list = (a) => a.map((t, i) => '       ' + (i + 1) + ') ' + t).join('\n');
   console.log(`
 ${line}
-    ⚡ Zeus Install & Update Wizard — automated installer for the hardened panel
+    Zeus Install & Update Wizard - automated installer for the hardened panel
 ${line}
-    Start:
+    Start (the same two questions either way):
 ${list(FLOW_START)}
-    Update an existing panel (same database and address):
+    Update an existing panel (${FLOW_UPDATE.length} steps, same database and address):
 ${list(FLOW_UPDATE)}
-    Install a new panel:
+    Install a new panel (${FLOW_INSTALL.length} steps):
 ${list(FLOW_INSTALL)}
 ${line}
-    🔒 Safety: your API token is never printed. It is saved on this computer only if you say yes
-       (remove it any time with: node wizard.mjs --forget).
+    Safety: your API token is never printed. It is saved on this computer only if you
+       say yes (remove it any time with: node wizard.mjs --forget).
 ${line}`);
 }
 
@@ -273,16 +335,16 @@ function tokenGuide(url) {
     console.log('  Open this link in your browser — every required permission is pre-configured and the name is randomised:');
     console.log(`     ${url}`);
     console.log('  (Continue to summary → Create Token → copy the created token and paste it here)');
-    console.log('  🔒 Nothing you type is echoed; only a fixed mask with the character count is shown.');
+    say('  ' + ic('lock') + ' Nothing you type is echoed; only a fixed mask with the character count is shown.');
     return;
   }
-  cardTop('🔑 Cloudflare API token');
+  cardTop(ic('key') + ' Cloudflare API token');
   cardRow(S.cyan('1') + '  Open the link below  ' + S.dim('(permissions pre-set, random name)'));
   cardRow(S.cyan('2') + '  Continue to summary → Create Token → copy the token');
   cardRow(S.cyan('3') + '  Paste it at the prompt and press Enter');
   cardEnd();
   console.log('\n     ' + S.cyan(S.under(url)) + '\n');
-  console.log('     🔒 ' + S.dim('Typing is hidden — only a mask and the character count are shown.') + '\n');
+  say('     ' + ic('lock') + ' ' + S.dim('Typing is hidden — only a mask and the character count are shown.') + '\n');
 }
 
 async function askSecret(rl, q) {
@@ -316,7 +378,7 @@ async function askSecret(rl, q) {
     const muted = new Writable({ write(_chunk, _enc, cb) { cb(); } });
     if (rl) rl.output = muted;
 
-    const head = '  ' + S.bold('🔑 Token') + S.dim(' ›') + ' ';
+    const head = plain('  ' + S.bold(ic('key') + ' Token') + S.dim(' ›') + ' ');
     const hint = 'paste your token here';
     let value = '';
     let done = false;
@@ -383,7 +445,7 @@ async function askSecret(rl, q) {
       if (pending) { pending = false; render(); }
       done = true;
       // replace the mask line with the confirmation in one write — never add a second line
-      try { process.stdout.write(HIDE + ERASE + '  ✅ ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n' + SHOW); } catch {}
+      try { process.stdout.write(plain(HIDE + ERASE + '  ' + ic('ok') + ' ' + S.green('Token received') + S.dim(' · ' + v.length + ' chars') + '\n' + SHOW)); } catch {}
       cleanup();
       resolve(v);
     };
@@ -425,18 +487,51 @@ async function askSecret(rl, q) {
   });
 }
 
-function ok(msg) { console.log(`  ✅ ${msg}`); }
-function warn(msg) { console.log(`  ⚠️  ${S.yellow(msg)}`); }
-function info(msg) { console.log(`     ${S.dim(msg)}`); }
+// A message with a leading mark: the first line starts with the mark, and any wrapped
+// continuation lines are indented under it so the mark never repeats.
+function marked(mark, msg) {
+  const head = '  ' + mark + ' ';
+  const pad = ' '.repeat(visWidth(head));
+  const words = String(msg).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur ? cur + ' ' + w : w;
+    if (cur && visWidth(next) + (lines.length ? pad.length : head.length) > WRAP_COLS) { lines.push(cur); cur = w; }
+    else cur = next;
+  }
+  if (cur) lines.push(cur);
+  if (!lines.length) return head.trimEnd();
+  return head + lines[0] + lines.slice(1).map((l) => '\n' + pad + l).join('');
+}
+function ok(msg) { say(marked(ic('ok'), msg)); }
+function warn(msg) { say(S.yellow(marked(ic('warn') + ' ', msg))); }
+function info(msg) { say(S.dim(wrapText(msg))); }
+// Greedy wrap to a terminal-cell budget, so a long explanation stays inside the
+// columns the cards use instead of wrapping mid-word however wide the window is.
+const WRAP_COLS = 96;
+function wrapText(text, indent = '     ', cols = WRAP_COLS) {
+  const pad = visWidth(indent);
+  const words = String(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur ? cur + ' ' + w : w;
+    if (cur && pad + visWidth(next) > cols) { lines.push(cur); cur = w; }
+    else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines.map((l) => indent + l).join('\n');
+}
 // Context line printed before every Cloudflare-touching step.
-function why(line) {
-  console.log('     ' + S.dim(line));
+function why(text) {
+  say(S.dim(wrapText(text)));
 }
 let activeRl = null; // for a clean readline exit (avoids the Windows assert)
 // Every error ends with ONE concrete next action.
 function fail(msg, hint) {
-  console.error(`\n  ❌ ${S.red(S.bold(msg))}`);
-  if (hint) console.error(`     💡 Next step: ${S.cyan(hint)}`);
+  sayErr(`\n  ${ic('cross')} ${S.red(S.bold(msg))}`);
+  if (hint) sayErr(`     ${ic('bulb')} Next step: ${S.cyan(hint)}`);
   process.exitCode = 1;
   restoreTty();
   try { process.stdin.pause(); } catch {}
@@ -1513,14 +1608,22 @@ async function accountStep(rl, store) {
   }
   why('Pick one of your saved accounts by number, or add a new API token.');
   const saved = store.accounts.slice().sort((a, b) => String(b.lastUsedAt || '').localeCompare(String(a.lastUsedAt || '')));
+  if (saved.length) {
+    cardTop(ic('bank') + ' Choose an account');
+    saved.forEach((a, i) => {
+      if (i) cardRow('');
+      cardRow('  ' + S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(a.accountName || a.accountId));
+      cardRow('      ' + S.dim('token ' + maskTok(a.token) + '  ·  ' + a.accountId.slice(0, 8) + '…  ·  used ' + fmtDate(a.lastUsedAt || a.savedAt)));
+    });
+    cardSep();
+    cardRow('  ' + S.cyan(' n') + '  ' + S.dim('add another account — paste a new token'));
+    cardRow('  ' + S.cyan(' f') + '  ' + S.dim('forget a saved account'));
+    cardEnd();
+  }
   while (saved.length) {
-    console.log('\n  Saved accounts on this computer:');
-    saved.forEach((a, i) => console.log(
-      `     ${S.cyan(String(i + 1))}) ${S.bold(a.accountName || a.accountId)}  ` +
-      S.dim(a.accountId.slice(0, 8) + '…  ·  token ' + maskTok(a.token) + '  ·  last used ' + fmtDate(a.lastUsedAt || a.savedAt))));
-    console.log(`     ${S.cyan('n')}) ${S.dim('add another account (paste a new token)')}`);
-    console.log(`     ${S.cyan('f')}) ${S.dim('forget a saved account')}\n`);
-    const ans = (await ask(rl, 'Choose a number', '1')).trim().toLowerCase();
+    const def = '1';
+    const label = saved.length > 1 ? `Account [1-${saved.length}], n or f` : 'Account [1], n or f';
+    const ans = (await ask(rl, label, def)).trim().toLowerCase();
     if (ans === 'n' || ans === String(saved.length + 1)) break;
     if (ans === 'f') {
       const k = parseInt(await ask(rl, 'Forget which account number?', ''), 10);
@@ -1607,10 +1710,14 @@ async function actionStep(rl, accountId, forced) {
     console.log('  Nothing to update in this account — a new panel will be installed.');
     return { kind: 'install', panels, all };
   }
-  console.log('');
-  console.log(`     ${S.cyan('1')}) ${S.bold('Update an existing panel')}   ${S.dim('re-deploys it with a freshly generated build fingerprint')}`);
-  console.log(`     ${S.cyan('2')}) ${S.bold('Install a new panel')}        ${S.dim('new worker, new database, new fingerprint')}`);
-  console.log('');
+  cardTop(ic('bolt') + ' What would you like to do?');
+  cardRow('');
+  cardRow('  ' + S.cyan('1') + '  ' + S.bold('Update an existing panel') + (panels.length > 1 ? S.dim('   ' + panels.length + ' panels found') : ''));
+  cardRow('     ' + S.dim('re-deploys it with a fresh build identity — database, users and address stay'));
+  cardRow('');
+  cardRow('  ' + S.cyan('2') + '  ' + S.bold('Install a new panel'));
+  cardRow('     ' + S.dim('new worker, new database, new build identity'));
+  cardEnd();
   const def = panels.length ? '1' : '2';
   const a = (await ask(rl, 'Choose 1 or 2', def)).trim();
   return { kind: (a === '1' || a === '2' ? a : def) === '1' ? 'update' : 'install', panels, all };
@@ -1626,7 +1733,7 @@ async function updateFlow(rl, ctx) {
 
   // ---------- [1/4] choose the worker
   nextStep('Choose the worker to update');
-  why('Existing panels are listed automatically — pick one by number. Only its script is replaced.');
+  why('Panels are listed automatically — pick one by number. Only its script is replaced.');
   const sub = await cf(`/accounts/${accountId}/workers/subdomain`);
   const subdomain = (sub.ok && sub.data.result && sub.data.result.subdomain) || profile.subdomain || '';
   const hostOf = {};
@@ -1644,11 +1751,20 @@ async function updateFlow(rl, ctx) {
   let showingAll = false;
   let pick = null;
   for (;;) {
-    console.log('');
-    list.forEach((w, i) => console.log(`     ${S.cyan(String(i + 1))}) ${S.bold(w.name)}  ${S.dim('· updated ' + fmtDate(w.modifiedOn))}\n        ${S.dim(addrOf(w.name))}`));
-    if (!showingAll) console.log(`     ${S.cyan('a')}) ${S.dim('show every worker in this account (if your panel is not listed)')}`);
-    console.log('');
-    const ans = (await ask(rl, 'Worker number', list.length ? '1' : 'a')).trim().toLowerCase();
+    cardTop(ic('up') + ' Choose the panel to update');
+    list.forEach((w, i) => {
+      if (i) cardRow('');
+      cardRow('  ' + S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(w.name));
+      cardRow('      ' + S.dim(addrOf(w.name)));
+      cardRow('      ' + S.dim('updated ' + fmtDate(w.modifiedOn) + (w.dbId ? '  ·  has its own database' : '')));
+    });
+    if (!showingAll) {
+      cardSep();
+      cardRow('  ' + S.cyan(' a') + '  ' + S.dim('show every worker in this account (if your panel is not listed)'));
+    }
+    cardEnd();
+    const pLabel = list.length > 1 ? `Panel [1-${list.length}]${showingAll ? '' : ' or a'}` : (list.length ? 'Panel [1]' : 'Panel (press a)');
+    const ans = (await ask(rl, pLabel, list.length ? '1' : 'a')).trim().toLowerCase();
     if (ans === 'a' && !showingAll) {
       list = all; showingAll = true;
       if (!list.length) fail('This account has no workers.', 'Run the wizard again and choose "Install a new panel".');
@@ -1725,23 +1841,29 @@ async function updateFlow(rl, ctx) {
   const finalSeed = (health.rebuilt && health.rebuilt.seed) || seed;
   const finalNames = (health.rebuilt && health.rebuilt.names) || build.names || null;
   const finalRows = (health.rebuilt && health.rebuilt.rows) || build.rows || 0;
+  const idLine = finalNames
+    ? 'new build identity: ' + Object.values(finalNames).slice(0, 2).join(', ') + ' ...'
+    : 'shared repository build deployed';
+  const reachLine = health.ok
+    ? 'responding now' + tick()
+    : 'not answered from this machine yet (filtered network or route propagation; the deploy itself was verified byte for byte)';
   if (COLOR) {
-    cardTop('🔄 Update complete  ·  ' + elapsed() + ' total');
+    cardTop(ic('up') + ' Update complete  ·  ' + elapsed() + ' total');
     cardRow();
     cardRow(S.bold(pick.name) + S.dim('  ·  same database, same address, freshly rebuilt bytes'));
     cardRow('   ' + S.cyan(S.under(url)));
-    cardRow('   ' + (health.ok ? S.green('responding now ✔') : S.yellow('not answered from this machine yet') + S.dim(' (filtered network or route propagation;')));
+    cardRow('   ' + (health.ok ? S.green('responding now' + tick()) : S.yellow('not answered from this machine yet') + S.dim(' (filtered network or route propagation;')));
     if (!health.ok) cardRow('   ' + S.dim(' the deploy itself was verified byte for byte)'));
     cardRow();
-    cardRow(finalNames ? S.dim('new build identity: ') + Object.values(finalNames).slice(0, 2).join(', ') + ' …' : S.dim('shared repository build deployed'));
+    cardRow(S.dim(idLine));
     cardEnd();
   } else {
     console.log(`
 ${line}
-  🔄 Update complete — ${pick.name}: same database, same address, freshly rebuilt bytes:
+  Update complete - ${pick.name}: same database, same address, freshly rebuilt bytes:
         ${url}
-        ${health.ok ? 'responding now ✔' : 'not answered from this machine yet (a filtered network or route propagation; the deploy itself was verified byte for byte)'}
-      ${finalNames ? 'New build identity: ' + Object.values(finalNames).slice(0, 2).join(', ') + ' …' : 'Shared repository build deployed.'}
+        ${reachLine}
+      ${idLine}
 ${line}`);
   }
   if (health.rebuilt) console.log('  Note: the panel kept tripping its integrity check, so this update rebuilt it with a brand-new identity. The database was never touched.');
@@ -1780,12 +1902,12 @@ async function main() {
   if (plan.kind === 'update') {
     await updateFlow(rl, { accountId, accountName, store, profile, panels: plan.panels, all: plan.all });
     cleanup();
-    console.log('\nDone. Good luck! 🌐');
+    say('\nDone. Good luck! ' + ic('globe'));
     return;
   }
 
   // ---------- Install a new panel: every new panel gets its own, freshly generated build identity
-  step = 0; totalSteps = 8;
+  step = 0; totalSteps = FLOW_INSTALL.length;
   let seed = null;
   if (noFingerprint) {
     warn('--no-fingerprint: the shared repository build is uploaded unchanged.');
@@ -1793,14 +1915,15 @@ async function main() {
     seed = newSeed();
   }
 
-  // ---------- [1/8] worker name
+  // ---------- [1/9] worker name
   nextStep('Worker name');
+  why('The worker name becomes part of your panel address. A neutral, random name is harder for automated scans to match.');
   const suggestedName = randName(8);
-  console.log('  Tip: a neutral, random name is harder for automated scans to match — press Enter to accept the suggestion.');
+  console.log('  Tip: press Enter to accept the suggested random name (' + suggestedName + ').');
   const workerName = (await ask(rl, 'Worker name', suggestedName)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!/^[a-z0-9][a-z0-9-]{0,57}$/.test(workerName)) fail('Worker name may only contain lowercase letters, digits and hyphens.', 'Press Enter to accept the suggested random name.');
 
-  // ---------- [4/10] subdomain
+  // ---------- [2/9] workers.dev address
   nextStep('workers.dev address');
   why('Your account workers.dev subdomain is read so the final panel address can be built.');
   let subdomain = profile.subdomain || '';
@@ -1819,7 +1942,7 @@ async function main() {
   }
   warn('Note: workers.dev is blocked in Iran; attach a custom domain for use inside Iran (final step).');
 
-  // ---------- [3/8] D1
+  // ---------- [3/9] D1
   nextStep('Create D1 database');
   why('The panel keeps every user and setting in one D1 database; an existing one is reused, never replaced or deleted.');
   let dbName = workerName + '-db';
@@ -1879,7 +2002,7 @@ async function main() {
 
   await ensureD1Ready(accountId, dbId, dbName);
 
-  // ---------- [6/10] source
+  // ---------- [4/9] source
   nextStep('Prepare hardened source');
   why('The panel file is fetched from this repository (or a CDN mirror) and scanned so no identifying string survives.');
   const src = await prepareSource(rl);
@@ -1888,13 +2011,13 @@ async function main() {
   ok('Source is ready: ' + src.path + ' (' + (scan.size / 1024).toFixed(0) + 'KB, zero identifiable keywords)');
   info('Size: ' + (scan.size / 1024).toFixed(0) + 'KB | keyword survivors: 0');
 
-  // ---------- [7/10] fingerprint
+  // ---------- [5/9] fingerprint
   nextStep('Personalise this build');
   why('The payload string table is re-keyed, re-ordered and renamed so your build is not byte-identical to anyone else\u2019s own build.');
   const build = seed ? fingerprint(src.path, seed) : { path: src.path, names: null, rows: 0 };
   if (!seed) warn('Fingerprint skipped (--no-fingerprint) — the shared repository build is deployed.');
 
-  // ---------- [8/10] upload
+  // ---------- [6/9] upload
   nextStep('Upload worker');
   why('The built file is uploaded and immediately read back so the deployed bytes are proven identical.');
   const exists = await workerExists(accountId, workerName);
@@ -1926,7 +2049,7 @@ async function main() {
   saveProfile(prof);
   noteWorker(store, accountId, workerName, { panelUrl });
 
-  // ---------- [9/10] enable workers.dev
+  // ---------- [7/9] enable workers.dev
   nextStep('Enable public address');
   let en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
     method: 'POST', body: { enabled: true, previews_enabled: false },
@@ -1944,7 +2067,7 @@ async function main() {
   if (fresh && !exists.known && en.ok) await primeFreshWorker({ accountId, workerName, buildPath: build.path, dbId, dbName });
   await settleDeploy(fresh);
 
-  // ---------- [10/10] health check (waits for propagation, self-heals a 1101 state)
+  // ---------- [8/9] health check (waits for propagation, self-heals a 1101 state)
   nextStep('Final check & summary');
   const health = await verifyDeployment({ accountId, workerName, buildPath: build.path, dbId, dbName, subdomain, srcPath: src.path, seed });
   if (health.rebuilt) {
@@ -1963,55 +2086,65 @@ async function main() {
     console.log('  worker script once with the identical verified bytes. The database was never touched.');
   }
 
+  // The last screen of the install. Both variants are built from the same strings, so
+  // the plain (no-color) card and the styled one can never drift apart.
+  const subPattern = makeWorkerUrl(workerName, subdomain, '/sub/<username>');
+  const identityNote = build.names
+    ? ' (' + Object.values(build.names).slice(0, 2).join(', ') + ' ...)'
+    : '';
   if (COLOR) {
-    cardTop('🎉 Install complete  ·  ' + elapsed() + ' total');
+    cardTop(ic('party') + ' Install complete  ·  ' + elapsed() + ' total');
     cardRow();
-    cardRow(S.bold('📍 Panel address') + S.dim('  (open it first and set the admin password)'));
+    cardRow(S.bold(ic('pin') + ' Panel address') + S.dim('  (open it first and set the admin password)'));
     cardRow('   ' + S.cyan(S.under(panelUrl)));
     cardRow();
-    cardRow(S.bold('🔗 User subscription pattern'));
-    cardRow('   ' + S.cyan(makeWorkerUrl(workerName, subdomain, '/sub/<username>')));
+    cardRow(S.bold(ic('link') + ' User subscription pattern'));
+    cardRow('   ' + S.cyan(subPattern));
     cardRow();
-    cardRow(S.yellow('⚠️  First thing to do: ') + 'open the panel address and set the admin password.');
+    cardRow(S.yellow(ic('warn') + '  First thing to do: ') + 'open the panel address and set the admin password.');
     cardRow(S.dim('   Until a password exists the panel answers its own API without one —'));
     cardRow(S.dim('   that is the author\'s first-run design, so never leave a fresh install unclaimed.'));
     cardSep();
     cardRow(S.bold('Good to know'));
-    cardRow(S.cyan('1') + '  This deployment has its own build identity' + (build.names ? S.dim(' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)') : ''));
+    cardRow(S.cyan('1') + '  This deployment has its own build identity' + S.dim(identityNote));
     cardRow('   ' + S.dim('— it is not byte-identical to anybody else\'s install of the panel.'));
     cardRow(S.cyan('2') + '  The in-panel "Update panel" button replaces this build with the author\'s;');
     cardRow('   ' + S.dim('restore yours with ') + S.cyan('node wizard.mjs --update'));
-    cardRow(S.cyan('3') + '  Inside Iran, finish the custom-domain step (you can do it right now).');
-    cardRow(S.cyan('4') + '  Keep your API token private. It is saved here only if you said yes (node wizard.mjs --forget removes it).');
+    cardRow(S.cyan('3') + '  Inside Iran, finish the custom-domain step below (or do it later).');
+    cardRow(S.cyan('4') + '  Keep your API token private. It is saved here only if you said yes.');
+    cardRow('   ' + S.dim('Remove it any time with ') + S.cyan('node wizard.mjs --forget'));
     cardEnd();
   } else {
+    const mid = (t) => '     ' + t;
     console.log(`
 ${line}
-  🎉 Install complete!
+  Install complete!
 
-     📍 Panel address (open it first and set the admin password):
-        ${panelUrl}
+${mid(ic('pin') + ' Panel address (open it first and set the admin password):')}
+${mid('   ' + panelUrl)}
 
-     🔗 User subscription pattern:
-        ${makeWorkerUrl(workerName, subdomain, '/sub/<username>')}
+${mid(ic('link') + ' User subscription pattern:')}
+${mid('   ' + subPattern)}
 
-  ⚠️  First thing to do: open the panel address above and set the admin password.
-     Until a password exists the panel answers its own API without one — that is the
+  ${ic('warn')}  First thing to do: open the panel address above and set the admin password.
+     Until a password exists the panel answers its own API without one - that is the
      author's first-run design, so do not leave a fresh install unclaimed.
 ${line}
-  ⚠️  Four important notes:
-      1. This deployment has its own build identity${build.names ? ' (' + Object.values(build.names).slice(0, 2).join(', ') + ' …)' : ''} — it is not
+  Four important notes:
+      1. This deployment has its own build identity${identityNote} - it is not
          byte-identical to anybody else's install of the same panel.
       2. If you ever use the "Update panel" button inside the panel, the author's own
-         build replaces this one — restore it with: node wizard.mjs --update
-      3. For use inside Iran, complete the custom-domain step (you can also do it
-         right now).
+         build replaces this one - restore it with: node wizard.mjs --update
+      3. For use inside Iran, finish the custom-domain step below (or do it later).
       4. Keep your API token private. It is saved on this computer only if you said yes
          (node wizard.mjs --forget removes it).
 ${line}`);
   }
 
-  // ---------- optional custom domain
+  // ---------- [9/9] optional custom domain — the panel works without it; workers.dev is
+  // filtered inside Iran, so this is the step that makes it usable there.
+  nextStep('Attach a custom domain (optional)');
+  why('The panel is already live on its workers.dev address. workers.dev is blocked in Iran, so a domain of your own is what makes it reachable there. Skipping changes nothing.');
   const wantDomain = await ask(rl, 'Do you have a custom domain you want to attach? (y/n)', 'n');
   if (wantDomain.toLowerCase() === 'y') {
     // Listing zones needs a token with Zone:Read — the wizard-created token does not include it,
@@ -2066,7 +2199,7 @@ ${line}`);
   }
 
   cleanup();
-  console.log('\nDone. Good luck! 🌐');
+  say('\nDone. Good luck! ' + ic('globe'));
 }
 
 
@@ -2082,7 +2215,7 @@ async function prepareOnlyMain() {
   console.log(`  Size: ${(scan.size / 1024).toFixed(0)}KB | identifiable keywords: ${scan.hits}`);
   if (rl) rl.close();
   if (scan.hits > 0) { process.exitCode = 2; return; }
-  console.log('  ✅ Preparation successful');
+  say('  ' + ic('ok') + ' Preparation successful');
 }
 
 // Delete saved API tokens from this computer: node wizard.mjs --forget
@@ -2137,7 +2270,7 @@ async function personalizeOnlyMain() {
   console.log(`  ${out} (${(scan.size / 1024).toFixed(0)}KB, keyword survivors ${scan.hits}, syntax check passed)`);
   if (rl) rl.close();
   if (scan.hits > 0) { process.exitCode = 2; return; }
-  console.log('  ✅ Personalised copy ready');
+  say('  ' + ic('ok') + ' Personalised copy ready');
 }
 
 function onUnhandled(e) {
@@ -2147,7 +2280,7 @@ function onUnhandled(e) {
 }
 
 if (typeof fetch !== 'function') {
-  console.error('❌ Node.js 18 or newer is required (fetch is not available in this version).');
+  sayErr(ic('cross') + ' Node.js 18 or newer is required (fetch is not available in this version).');
   process.exit(1);
 }
 
@@ -2172,7 +2305,7 @@ export { detectPrelude, personalize, verifyTransform, checkHardened, scanKeyword
 function helpText() {
   return `
 ${line}
-    ⚡ Zeus Install Wizard — help
+    Zeus Install Wizard - help
 ${line}
     Usage:
       node wizard.mjs                 full interactive install
@@ -2200,7 +2333,7 @@ ${line}`;
 
 function helpStyled() {
   const cmd = (c, d) => cardRow(S.cyan(c.padEnd(32)) + S.dim(d));
-  cardTop('⚡ ZEUS  ·  Install Wizard  ·  help');
+  cardTop(ic('bolt') + ' ZEUS  ·  Install & Update Wizard  ·  help');
   cardRow(S.bold('Usage') + S.dim('   node wizard.mjs [option]'));
   cardSep();
   cmd('(no option)', 'full interactive install');
@@ -2224,7 +2357,7 @@ function helpStyled() {
   cmd('ZEUS_NO_PREWARM=1', 'skip the first-install route priming');
   cmd('FORCE_COLOR=1', 'keep colours even when piped');
   cardSep();
-  cardRow('🔒 ' + S.dim('Your token is never printed — it shows as ••••••••. Saved only if you say yes.'));
+  cardRow(ic('lock') + ' ' + S.dim('Your token is never printed — it shows as a fixed mask. Saved only if you say yes.'));
   cardEnd();
 }
 

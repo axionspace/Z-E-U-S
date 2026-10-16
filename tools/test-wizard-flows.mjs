@@ -21,6 +21,10 @@ import { createHash } from 'node:crypto';
 import { detectPrelude, xorDecode, KW_RE, FORK_SOURCES, PERM_GROUPS, REQUIRED_COMPAT_DATE, REQUIRED_COMPAT_FLAGS, classifyDeployment, visWidth } from '../wizard/wizard.mjs';
 // Strip ANSI colour so a transcript can be measured the way a terminal draws it.
 const uncolor = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, '');
+// Messages are wrapped to the terminal width, so a phrase the wizard prints on one
+// line may arrive split across two. flat() collapses all whitespace (including
+// newlines) to single spaces, so an assertion checks the words, not the wrapping.
+const flat = (s) => uncolor(s).replace(/\s+/g, ' ');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT = resolve(__dirname, '..');
@@ -272,8 +276,18 @@ try {
     check(r.out.includes('Read-back matches'), 'S1 deployed bytes verified against the local build');
     check(r.out.includes('Install profile saved'), 'S1 saved an install profile');
     check(r.out.includes('Install complete'), 'S1 finished the install');
-    check(r.out.includes('Start:') && r.out.includes('Install a new panel:') && r.out.includes('[1/2]  Cloudflare account & token'), 'S1 banner explains the flow and starts with account & token');
-    check(r.out.includes('First thing to do: open the panel address above and set the admin password'), 'S1 tells the user to claim the panel before anything else');
+    check(r.out.includes('Start') && r.out.includes('Install a new panel (') && r.out.includes('[1/2]  Cloudflare account & token'), 'S1 banner explains the flow and starts with account & token');
+    // The banner is the table of contents: every step title it lists must be a step the
+    // run actually prints, in the same order, and the total must match the [n/m] counter.
+    const bannerSteps = ['Worker name', 'workers.dev address', 'Create D1 database', 'Prepare hardened source',
+      'Personalise this build', 'Upload worker', 'Enable public address', 'Final check & summary', 'Attach a custom domain (optional)'];
+    const printed = [...r.out.matchAll(/^  \[(\d+)\/(\d+)\]  (.+)$/gm)].map((m) => ({ n: +m[1], of: +m[2], title: m[3].trim() }));
+    const installPrinted = printed.filter((p) => p.of === 9).map((p) => p.title);
+    check(installPrinted.length === 9 && installPrinted.every((t, i) => t === bannerSteps[i]), 'S1 every install step is numbered 1..9 in banner order', JSON.stringify(installPrinted));
+    check(printed.slice(0, 2).every((p) => p.of === 2), 'S1 the two start steps are numbered /2 before the flow is chosen');
+    const bannerList = bannerSteps.filter((t) => r.out.includes(t));
+    check(bannerList.length === 9, 'S1 the banner lists all 9 install steps', String(bannerList.length));
+    check(flat(r.out).includes('First thing to do: open the panel address above and set the admin password'), 'S1 tells the user to claim the panel before anything else');
     check(r.out.includes('the panel answers its own API without one'), 'S1 explains why the password has to come first');
     check(!/[؀-ۿ]/.test(r.out), 'S1 the whole install output is English-only (no Persian/Arabic script)');
     check(r.out.includes('Database is ready'), 'S1 the D1 readiness gate ran before the upload');
@@ -344,7 +358,7 @@ try {
     check(r.out.includes('Selected: panel-one') || r.out.includes('panel-one'), 'S3 found the existing worker');
     check(r.out.includes('New build identity') || r.out.includes('build identity'), 'S3 mints a fresh identity like an install');
     check(r.out.includes('row census before: users=5, settings=12'), 'S3 read the database census first', r.out.match(/row census before.*/)?.[0]);
-    check(r.out.includes('Database intact: 2 tables with identical row counts'), 'S3 proves the rows survived');
+    check(flat(r.out).includes('Database intact: 2 tables with identical row counts'), 'S3 proves the rows survived');
     check(r.out.includes('Update complete'), 'S3 finished');
     check(r.out.includes('Letting the route attach (~5s)'), 'S3 a re-upload to an existing worker gets the short pause');
     const put = state.puts[0];
@@ -496,10 +510,10 @@ try {
     const { server, state, port } = await startMock({ probeMode: 'stuck-heals' });
     const r = await run(root, port, [], [TOKEN, '', 'n']);
     check(!r.fatal && r.code === 0, 'S12 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
-    check(r.out.includes('Cloudflare itself answered "error code: 1101"'), 'S12 names the real cause');
+    check(flat(r.out).includes('Cloudflare itself answered "error code: 1101"'), 'S12 names the real cause');
     check(r.out.includes('deletes the worker and uploads it once again'), 'S12 announces the self-heal before doing it');
     // the remedy is one clear English line, and the data promise holds
-    check(r.out.includes('💬 Cloudflare answered 1101 on a fresh deploy') && r.out.includes('the worker script is recreated once from the same verified bytes'), 'S12 explains the remedy in one English line');
+    check(flat(r.out).includes('💬 Cloudflare answered 1101 on a fresh deploy') && r.out.includes('the worker script is recreated once from the same verified bytes'), 'S12 explains the remedy in one English line');
     check(!/[؀-ۿ]/.test(r.out), 'S12 the whole self-heal output is English-only');
     check(state.deletes.length === 1 && /\/workers\/scripts\//.test(state.deletes[0]), 'S12 issued exactly one DELETE, on the worker script', JSON.stringify(state.deletes));
     check(!state.deletes.some((d) => /d1\/database/.test(d)), 'S12 never deletes a database', JSON.stringify(state.deletes));
@@ -539,7 +553,7 @@ try {
     check(!r.fatal && r.code === 0, 'S14 exit code 0 (the deploy itself succeeded)', r.out && r.out.slice(-2000));
     check(r.out.includes('The address did not answer within'), 'S14 names the wait instead of a false failure');
     check(r.out.includes('the uploaded bytes were verified against the'), 'S14 keeps the upload verification as the truth');
-    check(r.out.includes('💬 A brand-new address can take a minute or two to spread'), 'S14 explains the wait in one clear line');
+    check(flat(r.out).includes('💬 A brand-new address can take a minute or two to spread'), 'S14 explains the wait in one clear line');
     check(!/[؀-ۿ]/.test(r.out), 'S14 the whole patience output is English-only');
     check(state.deletes.length === 0, 'S14 an unreachable address is never mistaken for a 1101 — nothing was deleted', JSON.stringify(state.deletes));
     check(state.puts.length === 1, 'S14 uploaded exactly once (no pointless redeploy)');
@@ -626,7 +640,7 @@ try {
     const r = await run(root, port, [], [TOKEN, '', 'n']);
     check(!r.fatal && r.code === 0, 'S16 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
     check(r.out.includes('reports its database binding is missing'), 'S16 names the binding problem, not a stuck deploy');
-    check(r.out.includes('re-attaching the same D1 database now (nothing is deleted)'), 'S16 announces the fix before doing it');
+    check(flat(r.out).includes('re-attaching the same D1 database now (nothing is deleted)'), 'S16 announces the fix before doing it');
     check(state.deletes.length === 0, 'S16 a binding problem is never answered with a DELETE', JSON.stringify(state.deletes));
     check(state.puts.length === 2, 'S16 re-uploaded once with the binding pinned', 'PUTs=' + state.puts.length);
     check(r.out.includes('Binding fix worked'), 'S16 reports the healed address as working', r.out.slice(-1500));
@@ -643,7 +657,7 @@ try {
     const r = await run(root, port, [], [TOKEN, '', 'n']);
     check(!r.fatal && r.code === 0, 'S17 exit code 0 (the deploy itself is verified)', r.out && r.out.slice(-3000));
     check(r.out.includes('integrity check trips on every route'), 'S17 names the integrity problem');
-    check(r.out.includes('rebuilding this install with a fresh identity'), 'S17 announces the rebuild before doing it');
+    check(flat(r.out).includes('rebuilding this install with a fresh identity'), 'S17 announces the rebuild before doing it');
     check(state.deletes.length === 0, 'S17 a tripped check is never answered with a DELETE', JSON.stringify(state.deletes));
     check(state.puts.length === 2, 'S17 uploaded the original build once, then the rebuilt one', 'PUTs=' + state.puts.length);
     check(state.puts.length === 2 && sha(state.puts[0].bytes) !== sha(state.puts[1].bytes), 'S17 the second upload really is a different identity');
@@ -721,7 +735,7 @@ try {
     const r = await run(root, port, [], [TOKEN, 'panel-dup', 'y', 'n']);
     check(!r.fatal && r.code === 0, 'S21 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
     check(r.out.includes('already answers "error code: 1101" right now'), 'S21 the pre-flight names the stale broken record before asking');
-    check(r.out.includes('overwriting it with a fresh upload is the fix'), 'S21 the pre-flight recommends exactly the cure');
+    check(flat(r.out).includes('overwriting it with a fresh upload is the fix'), 'S21 the pre-flight recommends exactly the cure');
     check(r.out.includes('Self-heal worked'), 'S21 the heal still confirmed the fresh deploy', r.out.slice(-1500));
     check(state.deletes.length === 1, 'S21 exactly one script DELETE overall', JSON.stringify(state.deletes));
     check(r.out.includes('Install complete'), 'S21 the install completed');
@@ -808,8 +822,12 @@ try {
     });
     const r = await run(root, port, ['--test-saved-token', '--test-panels-menu'], ['1', '1', '']);
     check(!r.fatal && r.code === 0, 'S25b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
-    check(r.out.includes('1) Primary Account') && r.out.includes('2) Backup Account'), 'S25b numbers every saved login');
+    // The card draws each row as "  │   1  Primary Account", so the assertion looks for
+    // the number-then-name shape rather than a bare line start.
+    const acct = uncolor(r.out);
+    check(/[│|]\s+1\s+Primary Account/.test(acct) && /[│|]\s+2\s+Backup Account/.test(acct), 'S25b numbers every saved login');
     check(r.out.includes('add another account') || r.out.includes('different token'), 'S25b keeps the new-token option at the end');
+    check(r.out.includes('Choose an account'), 'S25b the account list is a titled card, not a bare list');
     check(r.out.includes('Primary Account') && (r.out.includes('token') || r.out.includes('Token')), 'S25b uses the picked login');
     check(r.out.includes('my-panel') || r.out.includes('existing panel'), 'S25b then lists that account\'s panels');
     check(r.out.includes('Update complete'), 'S25b finished the update it was routed into');
@@ -831,7 +849,7 @@ try {
     const r = await run(root, port, ['--test-saved-token'], ['1', '', 'n']);
     check(!r.fatal && r.code === 0, 'S26 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
     check(r.out.includes('Axion Custom Account'), 'S26 output shows the saved account name');
-    check(r.out.includes('Saved Cloudflare accounts') || r.out.includes('Saved accounts') || r.out.includes('Select account'), 'S26 lists saved accounts');
+    check(r.out.includes('Saved Cloudflare accounts') || r.out.includes('Saved accounts') || r.out.includes('Select account') || r.out.includes('Choose an account'), 'S26 lists saved accounts');
     check(r.out.includes('Axion Custom Account') && (r.out.includes('Using the saved token') || r.out.includes('Token is valid')), 'S26 reused the saved token');
     check(r.out.includes('Install complete'), 'S26 install finished using saved token');
     server.close();
@@ -981,14 +999,29 @@ try {
   console.log('• S30 a classic Windows console gets CP437-safe glyphs');
   {
     const wizSrc = readFileSync(WIZARD_SRC, 'utf8');
-    check(wizSrc.includes("tl: '┌'") && wizSrc.includes("bl: '└'"), 'S30 classic glyph set uses CP437 box drawing');
-    check(wizSrc.includes("spin: ['|', '/', '-', '\\\\']"), 'S30 classic spinner uses ASCII frames');
+    // The classic set is a separate constant so it can be asserted without running a
+    // child process: box corners, the bar and the spinner are all CP437-safe ASCII.
+    check(/CLASSIC_G = \{[^}]*tl: '\+'[^}]*bl: '\+'/.test(wizSrc), 'S30 classic box corners are ASCII "+"');
+    check(/CLASSIC_G = \{[^}]*spin: \['\|', '\/', '-', '\\\\'\]/.test(wizSrc), 'S30 classic spinner uses ASCII frames');
+    // One transcode covers the whole transcript, and the global console methods are
+    // wrapped so a write that bypasses say() cannot leak a "?" box either.
+    check(wizSrc.includes('const plain = (s) =>') && /ASCII_RE = new RegExp/.test(wizSrc), 'S30 one transcode maps every fancy glyph to ASCII');
+    check(wizSrc.includes('console[method] = (...args)') && /for \(const method of \['log', 'error', 'warn', 'info'\]\)/.test(wizSrc), 'S30 the global console methods are wrapped too');
     cleanStore();
     rmSync(profPath, { force: true });
     const { server, state, port } = await startMock();
-    const r = await run(root, port, ['--no-color'], [TOKEN, '', 'n']);
+    // A real classic console: no WT_SESSION/TERM_PROGRAM, forced classic mode. Everything
+    // this run prints — cards, menus, the completion card and every message — must be
+    // pure ASCII, because CP437 draws anything else as a "?" box.
+    const r = await run(root, port, ['--no-color'], [TOKEN, '', 'n'], { ZEUS_FORCE_CLASSIC: '1', WT_SESSION: '', TERM_PROGRAM: '', ConEmuANSI: '', TERM: 'cmd' });
     check(!r.fatal && r.code === 0, 'S30 classic run exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-1500));
     check(r.out.includes('Install complete'), 'S30 the classic run completes the install');
+    const nonAscii = [...new Set([...r.out].filter((ch) => ch.codePointAt(0) > 127))];
+    check(nonAscii.length === 0, 'S30 a full install prints zero non-ASCII characters', JSON.stringify(nonAscii.join('')));
+    check(r.out.includes('+') && r.out.includes('|'), 'S30 the classic card is drawn from ASCII rules');
+    const rUp = await run(root, port, ['--update'], [TOKEN, '', '1', ''], { ZEUS_FORCE_CLASSIC: '1', WT_SESSION: '', TERM_PROGRAM: '', ConEmuANSI: '', TERM: 'cmd' });
+    const upBad = [...new Set([...rUp.out].filter((ch) => ch.codePointAt(0) > 127))];
+    check(!rUp.fatal && rUp.code === 0 && upBad.length === 0, 'S30 a full update is also pure ASCII on a classic console', JSON.stringify(upBad.join('')));
     server.close();
     console.log('');
   }
