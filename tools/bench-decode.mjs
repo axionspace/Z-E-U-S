@@ -2,13 +2,13 @@
 // Measures the REAL generated prelude taken from the deployed build: cold decode of all
 // rows, warm (cached) reads, and whether any decoder call sits inside the socket-piping
 // path that carries user traffic.
-import { writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { detectPrelude, xorDecode } from '../wizard/wizard.mjs';
 
-const build = readFileSync(new URL('../Source-hardened.js', import.meta.url), 'utf8');
+const build = readFileSync((existsSync(new URL('../Source.js', import.meta.url)) ? new URL('../Source.js', import.meta.url) : new URL('../Source-hardened.js', import.meta.url)), 'utf8');
 const upstreamPath = new URL('../analysis/Source.js', import.meta.url);
 const upstream = (() => { try { return readFileSync(upstreamPath, 'utf8'); } catch { return null; } })();
 const det = detectPrelude(build);
