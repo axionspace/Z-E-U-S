@@ -150,7 +150,7 @@ irm https://raw.githubusercontent.com/axionspace/Z-E-U-S/main/wizard/install.ps1
 * **Modern Terminal UI**: Features sleek boxed cards, progress tracking, live countdown spinners on long waits, safe CP437 fallbacks for legacy Windows consoles (`cmd.exe`), and a flicker-free secret token prompt.
 * **Per-User ECH Support**: Integrated Encrypted Client Hello configuration with Google and Cloudflare DoH fallback resolvers across VLESS, Trojan, Clash, and sing-box subscriptions.
 * **Safe Updates with a Fresh Identity**: Re-deploy anytime with `node zeus-wizard/wizard.mjs --update` — the account and the live panels are listed by number, and the chosen worker is rebuilt with a **brand-new build fingerprint generated exactly like an install**, so no two deployments of yours ever share the same bytecode. The D1 database, its rows, user subscriptions, the workers.dev address and any custom domain mapping are never touched.
-* **Saved Accounts with a Numbered Menu**: The API token is stored per-user under `~/.zeus-wizard/accounts.json` (readable only by your own account, `0600`) with the Cloudflare account name, so the next run is just "pick account 1, pick panel 1". Install and update share one interface; nothing is ever auto-deleted. `--forget` removes every saved token.
+* **Saved Accounts, Every Choice a Number**: The API token is stored per-user under `~/.zeus-wizard/accounts.json` (readable only by your own account, `0600`) with the Cloudflare account name, so the next run is just "pick account 1, pick panel 1". Every row of every menu is a number — adding an account is the number after the last saved one and forgetting one is the number after that, so nothing has to be remembered as a letter. Install and update share one interface; nothing is ever auto-deleted. `--forget` removes saved tokens, by number or all at once.
 * **Automatic D1 Detection**: The wizard reads the worker's own settings first and reuses the database bound as `DB` before ever creating one, so re-runs and updates always land on the same database — and hitting the account's database cap is handled by reusing an existing one, never by deleting.
 
 ---
@@ -165,7 +165,7 @@ Append flags to the install command or pass them directly when running the wizar
 | `--doctor [worker]` | Read-only diagnosis of worker settings, D1 bindings, bytecode integrity, and route availability |
 | `--install` | Skips the choice menu and goes straight to installing a new panel |
 | `--update` | Manual update: pick the account and the worker from numbered lists (preserves database and users) |
-| `--forget` | Deletes the API tokens saved on this computer |
+| `--forget` | Deletes saved API tokens from this computer — pick one by number, or all |
 | `--rotate` | Generates a brand-new build identity and encryption seed |
 | `--no-fingerprint` | Deploys the shared repository build unchanged without local personalization |
 | `--prepare-only` | Downloads and validates the panel source locally without any Cloudflare calls |

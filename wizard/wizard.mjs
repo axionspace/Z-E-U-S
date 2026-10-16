@@ -1609,6 +1609,8 @@ async function accountStep(rl, store) {
   why('Pick one of your saved accounts by number, or add a new API token.');
   const saved = store.accounts.slice().sort((a, b) => String(b.lastUsedAt || '').localeCompare(String(a.lastUsedAt || '')));
   if (saved.length) {
+    // Every choice is a plain number, so the same key answers both "which account"
+    // and "add/forget" — nothing has to be remembered from a letter.
     cardTop(ic('bank') + ' Choose an account');
     saved.forEach((a, i) => {
       if (i) cardRow('');
@@ -1616,27 +1618,29 @@ async function accountStep(rl, store) {
       cardRow('      ' + S.dim('token ' + maskTok(a.token) + '  ·  ' + a.accountId.slice(0, 8) + '…  ·  used ' + fmtDate(a.lastUsedAt || a.savedAt)));
     });
     cardSep();
-    cardRow('  ' + S.cyan(' n') + '  ' + S.dim('add another account — paste a new token'));
-    cardRow('  ' + S.cyan(' f') + '  ' + S.dim('forget a saved account'));
+    cardRow('  ' + S.cyan(String(saved.length + 1).padStart(2)) + '  ' + S.dim('add another account — paste a new token'));
+    cardRow('  ' + S.cyan(String(saved.length + 2).padStart(2)) + '  ' + S.dim('forget a saved account'));
     cardEnd();
   }
   while (saved.length) {
+    const ADD = saved.length + 1, FORGET = saved.length + 2;
     const def = '1';
-    const label = saved.length > 1 ? `Account [1-${saved.length}], n or f` : 'Account [1], n or f';
+    const label = `Account [1-${FORGET}]`;
     const ans = (await ask(rl, label, def)).trim().toLowerCase();
-    if (ans === 'n' || ans === String(saved.length + 1)) break;
-    if (ans === 'f') {
-      const k = parseInt(await ask(rl, 'Forget which account number?', ''), 10);
+    const num = parseInt(ans, 10);
+    if (num === ADD) break;
+    if (num === FORGET) {
+      const k = parseInt(await ask(rl, `Forget which account? [1-${saved.length}]`, ''), 10);
       const victim = saved[k - 1];
-      if (!victim) { warn('No saved account has that number.'); continue; }
+      if (!victim) { warn(`No saved account has the number ${k || '(none given)'}.`); continue; }
       store.accounts = store.accounts.filter((a) => a.accountId !== victim.accountId);
       saved.splice(k - 1, 1);
       saveStore(store);
       ok('Removed the saved token of ' + (victim.accountName || victim.accountId));
       continue;
     }
-    const entry = saved[parseInt(ans, 10) - 1];
-    if (!entry) { warn('Type one of the numbers listed above, n or f.'); continue; }
+    const entry = saved[num - 1];
+    if (!entry) { warn(`Type a number from 1 to ${FORGET}.`); continue; }
     TOKEN = entry.token;
     const v = await cf('/user/tokens/verify');
     if (v.ok) {
@@ -2229,15 +2233,26 @@ async function forgetMain() {
     if (rl) rl.close();
     return;
   }
-  console.log('\n  Saved accounts on this computer (' + STORE_PATH + '):');
-  store.accounts.forEach((a, i) => console.log(`     ${S.cyan(String(i + 1))}) ${a.accountName || a.accountId}  ${S.dim('token ' + maskTok(a.token))}`));
-  const which = (await ask(rl, 'Forget which one? (number, or "all")', 'all')).trim().toLowerCase();
-  if (which === 'all') {
+  // Same numbered card as the picker, so "which one" is always answered with a number.
+  const ALL = store.accounts.length + 1;
+  cardTop(ic('lock') + ' Remove saved tokens');
+  store.accounts.forEach((a, i) => {
+    if (i) cardRow('');
+    cardRow('  ' + S.cyan(String(i + 1).padStart(2)) + '  ' + S.bold(a.accountName || a.accountId));
+    cardRow('      ' + S.dim('token ' + maskTok(a.token)));
+  });
+  cardSep();
+  cardRow('  ' + S.cyan(String(ALL).padStart(2)) + '  ' + S.dim('all of them — removes the whole file'));
+  cardEnd();
+  info('File: ' + STORE_PATH);
+  const ans = (await ask(rl, `Remove which? [1-${ALL}]`, String(ALL))).trim().toLowerCase();
+  const num = parseInt(ans, 10);
+  if (num === ALL || ans === 'all') {
     try { rmSync(STORE_PATH, { force: true }); ok('All saved tokens were removed from this computer.'); }
     catch (e) { warn('Could not remove the file (' + e.message + ').'); }
   } else {
-    const v = store.accounts[parseInt(which, 10) - 1];
-    if (!v) warn('No saved account has that number — nothing was removed.');
+    const v = store.accounts[num - 1];
+    if (!v) warn(`No saved account has the number ${num || '(none given)'} — nothing was removed.`);
     else {
       store.accounts = store.accounts.filter((a) => a.accountId !== v.accountId);
       saveStore(store);

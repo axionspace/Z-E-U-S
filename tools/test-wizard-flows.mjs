@@ -826,11 +826,58 @@ try {
     // the number-then-name shape rather than a bare line start.
     const acct = uncolor(r.out);
     check(/[│|]\s+1\s+Primary Account/.test(acct) && /[│|]\s+2\s+Backup Account/.test(acct), 'S25b numbers every saved login');
-    check(r.out.includes('add another account') || r.out.includes('different token'), 'S25b keeps the new-token option at the end');
+    // Every row is a number: with two saved logins, "add" is 3 and "forget" is 4.
+    check(/[│|]\s+3\s+add another account/.test(acct), 'S25b "add another account" is the next number, not a letter');
+    check(/[│|]\s+4\s+forget a saved account/.test(acct), 'S25b "forget a saved account" is the number after that');
+    check(/Account \[1-4\]/.test(acct), 'S25b the prompt names the range it accepts');
+    check(!/n or f/.test(acct), 'S25b no letter choices are offered anywhere');
     check(r.out.includes('Choose an account'), 'S25b the account list is a titled card, not a bare list');
     check(r.out.includes('Primary Account') && (r.out.includes('token') || r.out.includes('Token')), 'S25b uses the picked login');
     check(r.out.includes('my-panel') || r.out.includes('existing panel'), 'S25b then lists that account\'s panels');
     check(r.out.includes('Update complete'), 'S25b finished the update it was routed into');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S25c numbered forget flow
+  console.log('• S25c forgetting a saved account is a number, and renumbers what is left');
+  {
+    cleanStore();
+    rmSync(profPath, { force: true });
+    const seedStore = (n) => {
+      mkdirSync(join(root, '.zeus-home'), { recursive: true });
+      writeFileSync(join(root, '.zeus-home', 'accounts.json'), JSON.stringify({
+        version: 1,
+        accounts: [
+          { accountId: ACCOUNT_ID, accountName: 'First Account', token: TOKEN, savedAt: '2026-10-15T09:00:00Z', lastUsedAt: '2026-10-15T09:00:00Z' },
+          { accountId: 'b'.repeat(32), accountName: 'Second Account', token: 'tok-two', savedAt: '2026-10-14T09:00:00Z', lastUsedAt: '2026-10-14T09:00:00Z' },
+        ].slice(0, n),
+      }, null, 1));
+    };
+    seedStore(2);
+    const { server, state, port } = await startMock({
+      scripts: { 'my-panel': { bytes: Buffer.from(CANON), metadata: null } },
+      dbs: [{ name: 'my-panel-db', uuid: DB_UUID }],
+    });
+    // 4 = forget, 2 = the second account, then 1 = the survivor
+    const r = await run(root, port, ['--test-saved-token', '--test-panels-menu'], ['4', '2', '1', '']);
+    const txt = uncolor(r.out);
+    check(!r.fatal && r.code === 0, 'S25c exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(txt.includes('Removed the saved token of Second Account'), 'S25c forgot the account that was chosen');
+    check(/Account \[1-3\]/.test(txt), 'S25c the menu renumbers after a removal (2 accounts -> add 3, forget 4, then [1-3])');
+    const left = JSON.parse(readFileSync(join(root, '.zeus-home', 'accounts.json'), 'utf8'));
+    check(left.accounts.length === 1 && left.accounts[0].accountName === 'First Account', 'S25c only the chosen account was removed', JSON.stringify(left.accounts.map((a) => a.accountName)));
+    check(txt.includes('Using the saved token of First Account'), 'S25c the survivor is then picked by its number');
+    // An out-of-range number must be refused, not silently fall through to install.
+    // Two accounts are seeded again so the range under test is [1-4].
+    seedStore(2);
+    const oob = uncolor((await run(root, port, ['--test-saved-token'], ['9', '1', ''])).out);
+    check(/Type a number from 1 to 4\./.test(oob), 'S25c a number outside the range is refused with the range', oob.slice(-400));
+    seedStore(1);
+    const one = await run(root, port, ['--test-saved-token'], ['2', '']);
+    const oneTxt = uncolor(one.out);
+    check(/[│|]\s+2\s+add another account/.test(oneTxt), 'S25c with one account, "add" is 2 (the numbering follows the list)', oneTxt.slice(-800));
+    check(/Account \[1-3\]/.test(oneTxt), 'S25c the range is [1-3] for a one-account list');
     server.close();
     console.log('');
   }
