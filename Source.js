@@ -153,6 +153,57 @@ async function fetchEchConfig(domain) {
 	}
 	return null;
 }
+// A domain that goes into a DNS lookup and then into the user's subscription link must be a
+// domain. Without this, whatever was typed (a URL, an IP, a sentence, a Cyrillic homoglyph)
+// travelled straight into the query string of a fetch and into the client config. Checked
+// here, at the one place that owns the value, so every caller is covered.
+// Rules: plain ASCII, lowercase-normalised, at least two labels, a real TLD, no leading or
+// trailing hyphen, max 253 chars. IPs are rejected on purpose -- an ECH config is fetched
+// from a hostname's HTTPS record, and an address has none.
+const DOMAIN_RE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))*\.[a-z]{2,63}$/;
+function isValidEchDomain(value) {
+	const d = String(value == null ? "" : value).trim();
+	if (!d) return false;
+	// Non-ASCII is rejected rather than punycoded: a homoglyph domain would pass a naive
+	// check while pointing somewhere else entirely.
+	if (!/^[\x21-\x7e]+$/.test(d)) return false;
+	if (!DOMAIN_RE.test(d.toLowerCase())) return false;
+	// A bare IP literal has no HTTPS record to read an ECHConfig from.
+	if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(d)) return false;
+	return true;
+}
+// ALPN is a comma-separated list of protocol names ("h2,http/1.1"). Each item is checked on
+// its own; the whole field is rejected if any item is unusable, so a typo cannot silently
+// drop just part of the list. Empty is allowed (it means "let the client decide").
+const ALPN_ITEM_RE = /^[a-z0-9][a-z0-9.\-\/]{0,31}$/i;
+function alpnProblem(value) {
+	const raw = String(value == null ? "" : value).trim();
+	if (!raw) return null;
+	const items = raw.split(",").map((x) => x.trim());
+	if (items.length > 8) return "ALPN has too many entries (max 8)";
+	for (const item of items) {
+		if (!item) return "ALPN has an empty entry";
+		if (!ALPN_ITEM_RE.test(item)) return "ALPN entry is not a valid protocol name: " + item;
+	}
+	return null;
+}
+// One guard for both write paths. Returns a Response to send back, or null to continue.
+// A rejected save changes nothing at all, so the user's other edits are never half-applied.
+function validateEchFields(ech, ech_domain, alpn) {
+	const on = Boolean(ech);
+	if (on && ech_domain) {
+		if (!isValidEchDomain(ech_domain)) {
+			return new Response(JSON.stringify({
+				error: "دامنهٔ ECH نامعتبر است. یک دامنه مثل crypto.cloudflare.com وارد کنید یا خالی بگذارید.",
+			}), { status: 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
+		}
+	}
+	const ap = alpnProblem(alpn);
+	if (ap) {
+		return new Response(JSON.stringify({ error: ap }), { status: 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
+	}
+	return null;
+}
 // Returns the base64 ECHConfig for a user, or null when the user has ECH off / the lookup
 // failed. The TLS-only rule lives in the caller so every output format shares one decision.
 async function resolveEch(user) {
@@ -1336,6 +1387,10 @@ const Router = {
 								GLOBAL_LAST_ACTIVE_WRITE.delete(username);
 							}
 						}
+						{
+							const _bad = validateEchFields(ech, ech_domain, alpn);
+							if (_bad) return _bad;
+						}
 						let finalConnType = undefined;
 						if (protocols && Array.isArray(protocols) && protocols.length > 0) {
 							finalConnType = protocols.join(",");
@@ -1461,6 +1516,10 @@ const Router = {
 					const { username, uuid, limit_gb, expiry_days, limit_req, ips, tls, port, fingerprint, ip_limit, used_gb, used_req, created_at, is_active, block_porn, block_ads, frag_len, frag_int, advanced_frag, cipher_suites, tls_mask, user_proxy_iata, user_socks5, user_proxy_ip, auto_reset_vol_days, auto_reset_req_days, auto_rotate_ip, rotate_time, ip_operator, ip_count, auto_rotate_user_proxy, start_on_first_connect, enable_direct, connection_type, protocols, ech, ech_domain, alpn } = await readJsonBody(request);
 					if (!username) {
 						return new Response(JSON.stringify({ error: "نام کاربری اجباری است" }), { status: 400, headers: { "Content-Type": "application/json" } });
+					}
+					{
+						const _bad = validateEchFields(ech, ech_domain, alpn);
+						if (_bad) return _bad;
 					}
 					if (username.length > 32) {
 						return new Response(JSON.stringify({ error: "نام کاربری نمی‌تواند بیشتر از ۳۲ کاراکتر باشد" }), { status: 400, headers: { "Content-Type": "application/json" } });

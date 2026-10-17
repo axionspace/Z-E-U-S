@@ -119,6 +119,55 @@ const rows = det.blobs.map((b) => xorDecode(b, det.key));
 ok(rows.some((r) => r.includes('query-server-name')) || build.includes('query-server-name'), 'query-server-name is present in the shipped build');
 ok(!build.includes('vless://'), 'no forbidden protocol string leaks as plaintext');
 
+// 9) the ECH domain and ALPN are validated before they are stored. Both live in the same
+// plain-code block as the rest of ECH, so they are pulled out and exercised directly.
+const valStart = build.indexOf('const DOMAIN_RE =');
+const valEnd = build.indexOf('// Returns the base64 ECHConfig');
+ok(valStart !== -1 && valEnd > valStart, 'the ECH domain validator is present in the shipped build');
+const valFile = join(dir, 'validators.mjs');
+writeFileSync(valFile, build.slice(valStart, valEnd) + 'export { isValidEchDomain, alpnProblem, validateEchFields };\n');
+const vchk = spawnSync(process.execPath, ['--check', valFile], { encoding: 'utf8' });
+ok(vchk.status === 0, 'the validator block is valid JavaScript on its own', (vchk.stderr || '').split('\n')[1] || '');
+const V = await import(pathToFileURL(valFile).href);
+
+// a domain must really be a domain: whatever is typed now reaches a DNS lookup and the
+// user's own subscription link, so a URL, an IP or a stray space must not get through
+for (const good of ['crypto.cloudflare.com', 'EXAMPLE.COM', 'a.b.co.uk', 'x-1.example.com']) {
+  ok(V.isValidEchDomain(good) === true, 'accepts a real ECH domain: ' + good);
+}
+for (const bad of ['', '   ', 'http://x.com', '1.2.3.4', 'x', '.com', 'x.', '-x.com', 'x-.com',
+  'a..b.com', 'crypto.cloudflare.com/path', 'x y.com', 'crypto.cloudflare.com;drop', 'x.c', 'a'.repeat(64) + '.com']) {
+  ok(V.isValidEchDomain(bad) === false, 'refuses an invalid ECH domain: ' + JSON.stringify(bad.slice(0, 28)));
+}
+// A homoglyph domain would pass a naive ASCII check while pointing somewhere else entirely.
+ok(V.isValidEchDomain('dаmaine.com') === false, 'refuses a Cyrillic homoglyph domain');
+// An address has no HTTPS record, so it can never yield an ECHConfig.
+ok(V.isValidEchDomain('8.8.8.8') === false, 'refuses an IPv4 literal');
+
+// ALPN is a comma-separated list; one bad entry rejects the whole field rather than
+// silently dropping part of it.
+ok(V.alpnProblem('') === null, 'an empty ALPN is allowed (client default)');
+ok(V.alpnProblem('h2') === null, 'a single ALPN entry is allowed');
+ok(V.alpnProblem('h2,http/1.1') === null, 'a normal ALPN list is allowed');
+ok(V.alpnProblem('h2, http/1.1') === null, 'spaces after the commas are tolerated');
+ok(V.alpnProblem('h2,,http/1.1') !== null, 'an empty ALPN entry is refused');
+ok(V.alpnProblem('h2 x') !== null, 'an ALPN entry with a space is refused');
+ok(V.alpnProblem('h2;drop') !== null, 'an ALPN entry with punctuation is refused');
+ok(V.alpnProblem('a'.repeat(40)) !== null, 'an over-long ALPN entry is refused');
+ok(V.alpnProblem('1,2,3,4,5,6,7,8,9') !== null, 'an absurd number of ALPN entries is refused');
+
+// the guard is wired into BOTH write paths: PUT (edit) and POST (create)
+const guardCalls = (build.match(/validateEchFields\(/g) || []).length;
+ok(guardCalls === 3, 'both user write paths call the guard (1 definition + 2 call sites)', guardCalls + ' sites');
+const putIdx = build.indexOf('const { username: new_username, limit_gb');
+const postIdx = build.indexOf('const { username, uuid, limit_gb');
+ok(putIdx !== -1 && build.indexOf('validateEchFields(ech, ech_domain, alpn)', putIdx) !== -1 &&
+   build.indexOf('validateEchFields(ech, ech_domain, alpn)', putIdx) - putIdx < 4000,
+  'the PUT (edit user) path validates before its bind');
+ok(postIdx !== -1 && build.indexOf('validateEchFields(ech, ech_domain, alpn)', postIdx) !== -1 &&
+   build.indexOf('validateEchFields(ech, ech_domain, alpn)', postIdx) - postIdx < 2000,
+  'the POST (create user) path validates before its bind');
+
 rmSync(dir, { recursive: true, force: true });
 globalThis.fetch = realFetch;
 console.log('\n=== RESULT: ' + pass + ' PASS / ' + fail + ' FAIL ===');
