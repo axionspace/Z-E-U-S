@@ -111,6 +111,27 @@ const b = await ech.resolveEch({ ech: 1, ech_domain: 'a.example' });
 ok(!!a && !!b && a.config === b.config, 'the same domain yields the same config on the next build', a.config + ' / ' + b.config);
 ok(calls.length > callsAfterFirst, 'a new build re-reads the ECH config instead of serving a stale value');
 
+// A FAILED lookup must never be remembered. The default value is shared by every user who
+// left the field blank, so caching one null would hand every one of them a broken ECH for
+// the whole life of the isolate (minutes to hours), long after the network recovered.
+ech.ECH_BUILD_CACHE.clear();
+const DEFAULT_KEY = 'cloudflare-ech.com+udp://1.1.1.1';
+mockDoh({}); // both resolvers down: every request 500s
+const failed = await ech.resolveEch({ ech: 1, ech_domain: '' });
+ok(failed === null, 'a failing lookup returns null for that build');
+ok(!ech.ECH_BUILD_CACHE.has(DEFAULT_KEY), 'a failed lookup is NOT cached');
+mockDoh({ googleOk: true }); // the network comes back
+const recovered = await ech.resolveEch({ ech: 1, ech_domain: '' });
+ok(!!recovered && !!recovered.config, 'the very next build recovers once the lookup works again', recovered && recovered.config);
+// The default's hint asks Cloudflare first, so Google succeeding needs two attempts.
+ok(calls.length >= 1 && calls.length <= 2, 'the recovery really retried (fresh lookups, not a reused failure)', calls.length + ' calls');
+ok(calls.some((c) => c.url.includes('cloudflare-dns')), 'the retry honoured the default hint (Cloudflare first)');
+// ...and a SUCCESS is still cached, so the retry does not become a fetch on every build.
+const goodBefore = calls.length;
+await ech.resolveEch({ ech: 1, ech_domain: '' });
+ok(calls.length === goodBefore, 'a successful lookup IS cached');
+ech.ECH_BUILD_CACHE.clear();
+
 // 7) TLS-only rule: the same decision both outputs make
 const tls = [...ech.TLS_PORTS];
 ok(tls.includes('443') && !tls.includes('80'), 'the TLS port set contains 443 and never 80', tls.join(','));

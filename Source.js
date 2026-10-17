@@ -263,8 +263,16 @@ async function resolveEch(user) {
 	const key = parsed.value;
 	if (ECH_BUILD_CACHE.has(key)) return ECH_BUILD_CACHE.get(key);
 	const hit = await fetchEchConfig(parsed.host, parsed.hint);
+	if (!hit) {
+		// Only a successful lookup is remembered. Caching the failure would turn one
+		// transient timeout into a broken ECH for every user sharing this value -- and since
+		// the default value is shared by everyone who left the field blank, the whole isolate
+		// would keep handing out null for its entire lifetime (minutes to hours).
+		// Returning null here still means "no ECH on this build"; the next build retries.
+		return null;
+	}
 	// "domain" is deliberately the HOSTNAME: every consumer writes it into an SNI field.
-	const value = hit ? { config: hit.config, domain: parsed.host, value: parsed.value, resolver: hit.resolver } : null;
+	const value = { config: hit.config, domain: parsed.host, value: parsed.value, resolver: hit.resolver };
 	ECH_BUILD_CACHE.set(key, value);
 	return value;
 }
