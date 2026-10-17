@@ -31,7 +31,7 @@ const ok = (c, l, e) => { console.log((c ? 'PASS | ' : 'FAIL | ') + l + (e ? ' |
 const TLS_PORTS_RE = /const TLS_PORTS = new Set\(\[[^\]]*\]\);/;
 const tlsMatch = build.match(TLS_PORTS_RE);
 ok(!!tlsMatch, 'the TLS port set is present in the shipped build');
-const start = build.indexOf('const ECH_DEFAULT_DOMAIN');
+const start = build.indexOf('const ECH_DEFAULT_HOST');
 const endMarker = '\treturn value;\r\n}';
 const end = build.indexOf(endMarker, start);
 ok(start !== -1 && end !== -1, 'the ECH block is present in the shipped build', start + '..' + end);
@@ -40,7 +40,7 @@ const echBlock = build.slice(start, end + endMarker.length);
 const mod = [
   tlsMatch[0],
   echBlock,
-  'export { fetchEchConfig, resolveEch, echDomainFor, ECH_BUILD_CACHE, ECH_DEFAULT_DOMAIN, TLS_PORTS };',
+  'export { fetchEchConfig, resolveEch, echDomainFor, echValueFor, parseEchValue, preferredEchResolver, ECH_BUILD_CACHE, ECH_DEFAULT_DOMAIN, ECH_DEFAULT_HOST, TLS_PORTS };',
 ].join('\n\n');
 const dir = mkdtempSync(join(tmpdir(), 'zeus-ech-'));
 const f = join(dir, 'ech.mjs');
@@ -94,8 +94,13 @@ const dead = await ech.fetchEchConfig('example.com');
 ok(dead === null, 'both resolvers failing returns null instead of throwing');
 
 // 5) default domain when the user leaves the field empty
-ok(ech.echDomainFor({ ech: 1, ech_domain: '  ' }) === ech.ECH_DEFAULT_DOMAIN, 'an empty ECH domain falls back to the built-in default');
+ok(ech.echDomainFor({ ech: 1, ech_domain: '  ' }) === ech.ECH_DEFAULT_HOST, 'an empty ECH domain falls back to the built-in default host');
 ok(ech.echDomainFor({ ech: 1, ech_domain: 'Crypto.CloudFlare.com' }) === 'crypto.cloudflare.com', 'the ECH domain is normalised to lowercase');
+// The default is a directive ("host+udp://dns"). Only the HOST half may ever be emitted as
+// SNI, or every generated config would carry a string that is not a hostname.
+ok(ech.ECH_DEFAULT_DOMAIN.includes('+'), 'the built-in default carries a resolver hint');
+ok(ech.echDomainFor({ ech: 1, ech_domain: '' }) === 'cloudflare-ech.com', 'the default resolves to the bare hostname for SNI', ech.echDomainFor({ ech: 1, ech_domain: '' }));
+ok(!ech.echDomainFor({ ech: 1, ech_domain: 'x.example.com+udp://1.1.1.1' }).includes('+'), 'a directive value yields a bare hostname for SNI');
 
 // 6) per-build cache: a second build must re-read (never a stale cross-request value)
 mockDoh({ googleOk: true });
@@ -143,6 +148,30 @@ for (const bad of ['', '   ', 'http://x.com', '1.2.3.4', 'x', '.com', 'x.', '-x.
 ok(V.isValidEchDomain('dаmaine.com') === false, 'refuses a Cyrillic homoglyph domain');
 // An address has no HTTPS record, so it can never yield an ECHConfig.
 ok(V.isValidEchDomain('8.8.8.8') === false, 'refuses an IPv4 literal');
+
+// The field accepts two shapes: a bare hostname, and the client-directive form
+// "host+udp://dns" that Xray/Hiddify use. The panel does its own DoH lookup, so the hint
+// picks which resolver runs first, and only the host half is ever emitted as SNI.
+const P = ech.parseEchValue;
+ok(P('cloudflare-ech.com').host === 'cloudflare-ech.com' && P('cloudflare-ech.com').hint === '',
+  'a bare hostname parses with no resolver hint');
+ok(P('cloudflare-ech.com+udp://1.1.1.1').host === 'cloudflare-ech.com' &&
+   P('cloudflare-ech.com+udp://1.1.1.1').hint === 'udp://1.1.1.1',
+  'the directive form splits into host and hint');
+ok(P('EXAMPLE.COM').host === 'example.com', 'the parsed host is lowercased');
+ok(P('x.example.').host === 'x.example', 'a fully-qualified trailing dot is normalised away');
+ok(P('https://x.com') === null, 'a URL is still not accepted as a domain');
+ok(P('cloudflare-ech.com+nonsense') === null, 'a malformed directive tail is refused');
+ok(P('cloudflare-ech.com+udp://1.1.1.1+udp://2.2.2.2') === null, 'two directive tails are refused');
+// The hint may only REORDER the two known resolvers -- it can never add one, so a crafted
+// hint cannot redirect the lookup to an attacker's server.
+ok(ech.preferredEchResolver('udp://1.1.1.1') === 'cloudflare-dns', 'a Cloudflare resolver hint selects Cloudflare first');
+ok(ech.preferredEchResolver('udp://8.8.8.8') === 'dns.google', 'a Google resolver hint selects Google first');
+ok(ech.preferredEchResolver('udp://9.9.9.9') === null, 'an unknown resolver falls back to the normal order');
+ok(ech.preferredEchResolver('') === null, 'a missing hint falls back to the normal order');
+// The built-in default is the directive form, and it must still produce a usable SNI.
+ok(ech.ECH_DEFAULT_DOMAIN === 'cloudflare-ech.com+udp://1.1.1.1', 'the built-in default is cloudflare-ech.com+udp://1.1.1.1', ech.ECH_DEFAULT_DOMAIN);
+ok(ech.echDomainFor({ ech: 1, ech_domain: '' }) === 'cloudflare-ech.com', 'the default yields the bare hostname, not the directive');
 
 // ALPN is a comma-separated list; one bad entry rejects the whole field rather than
 // silently dropping part of it.

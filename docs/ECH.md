@@ -8,8 +8,21 @@
 # ------------------------------------------------------------------ how it works
 #
 # * One toggle per user, in the «پورت‌های اتصال و شبکه» tab («رمزنگاری سلام کلاینت (ECH)»),
-#   with an optional ECH-domain field (default `crypto.cloudflare.com`) and an optional ALPN
-#   field. Blank ALPN means "let the client negotiate", which is the recommended setting.
+#   with an optional ECH-domain field (default `cloudflare-ech.com+udp://1.1.1.1`) and an
+#   optional ALPN field. Blank ALPN means "let the client negotiate", which is recommended.
+#
+# * The field takes two shapes. A bare hostname (`crypto.cloudflare.com`) is looked up and
+#   emitted as-is. The directive form (`cloudflare-ech.com+udp://1.1.1.1`) is the shape Xray
+#   and Hiddify use: the part before `+` is the host, and the part after names the resolver
+#   to read the config from. This panel performs the DoH lookup itself, so the hint decides
+#   which of our two resolvers tries first (1.1.1.1/1.0.0.1 -> Cloudflare, 8.8.8.8/8.8.4.4
+#   -> Google). It cannot add a resolver, only reorder the fixed pair. Everything that goes
+#   into a generated config as SNI (`query-server-name`, `server_name`, `sni`) is the
+#   hostname ALONE — the full directive is not a valid SNI.
+#
+# * Both fields are validated server-side on save, on both write paths (create and edit).
+#   A bad domain or a malformed ALPN list is refused with a 400 and nothing is written, so a
+#   user's other edits are never half-applied.
 #
 # * The setting lives in three new `users` columns — `ech`, `ech_domain`, `alpn`. They are
 #   added by the panel's existing runtime migration (`ALTER TABLE users ADD COLUMN …`), which
@@ -38,7 +51,7 @@
 # ------------------------------------------------------------------ verification
 #
 #   node tools/test-ech-hardening.mjs  # static: the feature survived the hardening round-trip
-#   node tools/test-ech-behaviour.mjs  # runtime: the fetch order, timeout and cache behaviour
+#   node tools/test-ech-behaviour.mjs  # runtime: fetch order, timeout, cache, validation, both value shapes
 #   node tools/live-ech-check.mjs     # live, against a real deployment
 #
 # All three are offline-safe except the last one, which needs `ZEUS_CF_TOKEN` in the

@@ -35,7 +35,11 @@ const checks = [
   ['ECH_DOH_RESOLVERS', 'the DoH fallback list (Google then Cloudflare) exists'],
   ['dns.google/resolve', 'Google DoH is the first resolver'],
   ['cloudflare-dns.com/dns-query', 'Cloudflare DoH is the fallback'],
-  ['crypto.cloudflare.com', 'the default ECH domain is embedded'],
+  ['cloudflare-ech.com', 'the default ECH host is embedded'],
+  // The default is the directive form; the host is built from ECH_DEFAULT_HOST so both
+  // halves must survive hardening.
+  ['ECH_DEFAULT_HOST', 'the default host constant is embedded'],
+  ['+udp://1.1.1.1', 'the default resolver hint is embedded'],
   ['ECH_BUILD_CACHE', 'the per-build cache exists'],
   ['const tlsOnly = ports.filter((p) => TLS_PORTS.has(p));', 'ECH forces TLS-only ports'],
   ['{ name: "ech", def: "INTEGER DEFAULT 0" },', 'the ECH column migration exists'],
