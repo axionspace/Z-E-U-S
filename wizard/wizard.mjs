@@ -1192,9 +1192,26 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName, opt
   let bindings = [{ type: 'd1', name: 'DB', id: dbId }];
   let compat = REQUIRED_COMPAT_DATE;
   let flags = [...REQUIRED_COMPAT_FLAGS];
+  // Bindings read while the script still existed, for the recreate path: once the script
+  // has been deleted /settings answers 404 and there is nothing left to read, so the caller
+  // passes them in rather than letting them disappear.
+  const carried = Array.isArray(opts.carriedBindings) ? opts.carriedBindings.filter((b) => b && !(b.type === 'd1' && b.name === 'DB')) : [];
+  // A secret_text binding is WRITE-ONLY: /settings reports its name and type but never its
+  // value, by design. Echoing it back with an empty text is what the API rejects with
+  // "10021: invalid or missing text property for binding <name>". Such a binding therefore
+  // cannot be carried by simply copying it through — it has to be re-bound with the value,
+  // which the caller supplies (see secretBindings) or the user re-enters afterwards.
+  const usable = (b) => !(b && b.type === 'secret_text' && typeof b.text !== 'string' && typeof b.text_value !== 'string');
+  const secretNames = [];
+  const keepable = (list) => list.filter((b) => {
+    if (!b) return false;
+    if (b.type === 'secret_text' && !usable(b)) { secretNames.push(b.name); return false; }
+    return true;
+  });
+  const secretFromOpts = opts.secretBindings && typeof opts.secretBindings === 'object' ? opts.secretBindings : null;
   const settings = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
   if (settings.ok && Array.isArray(settings.data.result.bindings)) {
-    const keep = settings.data.result.bindings.filter((b) => b && !(b.type === 'd1' && b.name === 'DB'));
+    const keep = keepable(settings.data.result.bindings.filter((b) => b && !(b.type === 'd1' && b.name === 'DB')));
     bindings = keep.concat([{ type: 'd1', name: 'DB', id: dbId }]);
     const prevDate = settings.data.result.compatibility_date;
     if (prevDate && prevDate > compat) compat = prevDate;
@@ -1203,9 +1220,32 @@ async function uploadWorker(accountId, workerName, scriptPath, dbId, dbName, opt
     if (Array.isArray(prevFlags)) flags = [...new Set([...prevFlags, ...REQUIRED_COMPAT_FLAGS])];
     if (keep.length) qok('Preserving ' + keep.length + ' existing worker binding(s)');
   } else if (settings.status === 404) {
-    qlog('     (no existing bindings to preserve)');
+    if (carried.length) {
+      // The script is gone (this is the recreate after a delete), but the caller captured
+      // these before removing it — put them back instead of silently dropping them.
+      bindings = keepable(carried).concat([{ type: 'd1', name: 'DB', id: dbId }]);
+      qok('Restored ' + (bindings.length - 1) + ' binding(s) carried across the recreate: ' + bindings.slice(0, -1).map((b) => b.name).join(', '));
+    } else {
+      qlog('     (no existing bindings to preserve)');
+    }
   } else {
     warn('Could not read current worker settings (' + settings.errors + ') — uploading with the standard D1 binding.');
+    if (carried.length) {
+      bindings = keepable(carried).concat([{ type: 'd1', name: 'DB', id: dbId }]);
+      qok('Restored ' + (bindings.length - 1) + ' binding(s) carried across the recreate: ' + bindings.slice(0, -1).map((b) => b.name).join(', '));
+    }
+  }
+  // Put back any secret whose value the caller supplied, then say plainly which ones are
+  // still missing — a silently dropped secret is how a panel loses its own updater.
+  for (const name of secretNames) {
+    const v = secretFromOpts && typeof secretFromOpts[name] === 'string' ? secretFromOpts[name] : null;
+    if (v) bindings.push({ type: 'secret_text', name, text: v });
+  }
+  const stillMissing = secretNames.filter((n) => !(secretFromOpts && typeof secretFromOpts[n] === 'string'));
+  if (stillMissing.length) {
+    warn('This worker has secret binding(s) whose value Cloudflare never returns: ' + stillMissing.join(', ') + '.');
+    info('They are NOT included in this upload, so the panel\'s own in-panel updater will not work until you set them again:');
+    info('dashboard → Workers & Pages → ' + workerName + ' → Settings → Variables and Secrets.');
   }
   const metadata = { main_module: 'worker.js', compatibility_date: compat, compatibility_flags: flags, bindings };
   const putOnce = async () => {
@@ -1499,6 +1539,17 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const retry = await waitForVerdict(base, Math.min(waitMs, 60000), stepMs);
   if (retry.verdict === 'ok') { ok('Re-upload worked: the panel address now answers normally ✔'); return { ok: true, state: 'ok', healed: true, rebuilt: null }; }
   warn('Re-upload alone did not clear it (' + retry.verdict + ') — falling through to recreating the worker script.');
+  // The recreate below deletes the script, and once it is gone /settings answers 404 — so
+  // uploadWorker can no longer read the existing bindings and would upload with only the D1
+  // binding. For a panel carrying secret_text bindings (CF_ACCOUNT_ID / CF_API_TOKEN, which
+  // the in-panel updater needs) that would silently strip them. Read them now, while they
+  // still exist, and hand them to the re-upload.
+  let carried = [];
+  const preSettings = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/settings`);
+  if (preSettings.ok && Array.isArray(preSettings.data.result.bindings)) {
+    carried = preSettings.data.result.bindings.filter((b) => b && !(b.type === 'd1' && b.name === 'DB'));
+    if (carried.length) info('Keeping ' + carried.length + ' non-database binding(s) across the recreate: ' + carried.map((b) => b.name).join(', '));
+  }
   const del = await cf(`/accounts/${accountId}/workers/scripts/${workerName}`, { method: 'DELETE' });
   if (!del.ok) { warn('Could not remove the worker (' + del.errors + ') — stopping here without touching anything else.'); return { ok: false, state: 'stuck', healed: false, rebuilt: null }; }
   ok('Worker script removed; the database ' + (dbName || 'DB') + ' was not touched');
@@ -1509,7 +1560,7 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
     if (!st.ok && st.status === 404) break;
     await pause(stepMs, 'Waiting for the delete to land');
   }
-  await uploadWorker(accountId, workerName, buildPath, dbId, dbName);
+  await uploadWorker(accountId, workerName, buildPath, dbId, dbName, { carriedBindings: carried });
   const en = await cf(`/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, { method: 'POST', body: { enabled: true, previews_enabled: false } });
   if (!en.ok) warn('Subdomain re-enable reported (' + en.errors + ') — enable it from the dashboard if needed.');
   await settleDeploy(true);

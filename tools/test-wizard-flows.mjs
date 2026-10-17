@@ -172,9 +172,15 @@ function startMock(opt = {}) {
             }
             // Like the real API, report the metadata of the last PUT when there is one —
             // the wizard polls this to confirm the D1 binding, date and flags landed.
+            // And, also like the real API, NEVER report a secret's value: /settings returns
+            // a secret_text binding by name and type only. Getting this wrong in the mock is
+            // what hid the 10021 failure the real API throws when a secret is echoed back
+            // with no text.
+            const redact = (list) => (list || []).map((b) => (b && b.type === 'secret_text' ? { name: b.name, type: 'secret_text' } : b));
             const md = state.scripts[name].metadata;
-            if (md) return json(200, okEnv({ bindings: md.bindings || [], compatibility_date: md.compatibility_date || '2024-09-23', compatibility_flags: md.compatibility_flags || [] }));
-            return json(200, okEnv(state.settings || { bindings: [], compatibility_date: '2024-09-23' }));
+            if (md) return json(200, okEnv({ bindings: redact(md.bindings), compatibility_date: md.compatibility_date || '2024-09-23', compatibility_flags: md.compatibility_flags || [] }));
+            const st = state.settings || { bindings: [], compatibility_date: '2024-09-23' };
+            return json(200, okEnv({ ...st, bindings: redact(st.bindings) }));
           }
           if (method === 'GET' && url.searchParams.get('include_source') === 'true') {
             const sc = state.scripts[name];
@@ -205,6 +211,11 @@ function startMock(opt = {}) {
                 else if (/filename="worker\.js"/.test(head)) bytes = body;
               }
             }
+            // A secret_text binding with no value is what the real API rejects, with
+            // "10021: invalid or missing text property for binding <name>". Reproduced here
+            // so the suite can never again pass while the real upload would fail.
+            const badSecret = (metadata && metadata.bindings || []).find((b) => b && b.type === 'secret_text' && typeof b.text !== 'string' && typeof b.text_value !== 'string');
+            if (badSecret) return json(400, errEnv(10021, 'invalid or missing text property for binding ' + badSecret.name));
             state.puts.push({ name, bytes, metadata });
             state.scripts[name] = { bytes, metadata };
             return json(200, okEnv({ id: name }));
@@ -744,6 +755,46 @@ try {
     check(r.out.includes('Self-heal worked'), 'S21 the heal still confirmed the fresh deploy', r.out.slice(-1500));
     check(state.deletes.length === 1, 'S21 exactly one script DELETE overall', JSON.stringify(state.deletes));
     check(r.out.includes('Install complete'), 'S21 the install completed');
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S21b bindings survive the recreate
+  // The 1101 self-heal deletes the script and uploads it again. Once the script is gone,
+  // /settings answers 404, so the bindings can no longer be read — a panel carrying
+  // secret_text bindings (CF_ACCOUNT_ID / CF_API_TOKEN, which its own updater needs) would
+  // silently lose them. They are captured before the delete and restored on the re-upload.
+  console.log('• S21b the 1101 recreate keeps the worker\'s non-database bindings');
+  {
+    cleanStore(); rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({
+      probeMode: 'stuck-heals',
+      settings: {
+        bindings: [
+          { type: 'd1', name: 'DB', id: DB_UUID },
+          { type: 'secret_text', name: 'CF_ACCOUNT_ID', text: 'acct' },
+          { type: 'secret_text', name: 'CF_API_TOKEN', text: 'tok' },
+        ],
+        compatibility_date: REQUIRED_COMPAT_DATE,
+        compatibility_flags: [...REQUIRED_COMPAT_FLAGS],
+      },
+    });
+    state.scripts['panel-secrets'] = { bytes: Buffer.from(CANON), metadata: null };
+    const r = await run(root, port, [], [TOKEN, 'panel-secrets', 'y', 'n']);
+    check(!r.fatal && r.code === 0, 'S21b exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-2500));
+    check(state.deletes.length === 1, 'S21b the script really was recreated', JSON.stringify(state.deletes));
+    // Cloudflare never returns a secret's value, so it cannot be carried through. The wizard
+    // must NOT echo the binding back empty (the API rejects that outright) — it must leave it
+    // out of the upload and tell the user plainly which secret is now missing.
+    const put = state.puts[state.puts.length - 1]; // the upload after the recreate
+    const names = (put && put.metadata && put.metadata.bindings || []).map((b) => b.type + ':' + b.name);
+    check(!names.some((n) => n.startsWith('secret_text:')), 'S21b no value-less secret is echoed into the upload', JSON.stringify(names));
+    check(names.filter((n) => n === 'd1:DB').length === 1, 'S21b exactly one D1 binding, not duplicated', JSON.stringify(names));
+    check(flat(r.out).includes('Cloudflare never returns'), 'S21b the user is told why the secret is gone');
+    check(r.out.includes('CF_ACCOUNT_ID') && r.out.includes('CF_API_TOKEN'), 'S21b the message names the exact bindings to restore');
+    check(r.out.includes('Variables and Secrets'), 'S21b the message says where to set them again');
+    check(state.puts.every((p) => !(p.metadata && (p.metadata.bindings || []).some((b) => b.type === 'secret_text' && typeof b.text !== 'string'))),
+      'S21b no upload in the whole run was rejected for a value-less secret');
     server.close();
     console.log('');
   }
