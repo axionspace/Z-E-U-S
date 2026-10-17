@@ -122,9 +122,12 @@ const DOH_RESOLVER = "https://cloudflare-dns.com/dns-query";
 // the ECHConfig is fetched from DoH on every subscription build (Google first, Cloudflare as
 // the fallback), and enabling ECH forces the generated links onto TLS ports only.
 const ECH_DEFAULT_HOST = "cloudflare-ech.com";
-// The built-in value, in the same directive form the field accepts: the host is where the
-// config is read from, and the "+udp://..." half names the resolver to try first.
-const ECH_DEFAULT_DOMAIN = ECH_DEFAULT_HOST + "+udp://1.1.1.1";
+// The built-in value is the HOSTNAME ALONE, so the field reads as a domain and a user who
+// just ticks the box never has to understand the "+..." syntax. Which resolver reads the
+// config is still decided below: with no hint the normal Google-then-Cloudflare order runs,
+// and a user who does want a specific one writes it after a "+" (both the "udp://8.8.8.8"
+// form BPB and cfnew use and Nova's "https://dns.google/dns-query" URL form are recognised).
+const ECH_DEFAULT_DOMAIN = ECH_DEFAULT_HOST;
 const ECH_DOH_RESOLVERS = [
 	{ name: "dns.google", url: (d) => "https://dns.google/resolve?name=" + encodeURIComponent(d) + "&type=HTTPS" },
 	{ name: "cloudflare-dns", url: (d) => "https://cloudflare-dns.com/dns-query?name=" + encodeURIComponent(d) + "&type=HTTPS" },
@@ -208,11 +211,34 @@ function isValidEchDomain(value) {
 // 8.8.4.4 are Google's; anything else (or nothing) keeps the normal Google-then-Cloudflare
 // order. This is how the "+udp://..." half is honoured here: the panel does the lookup
 // itself, so the hint decides which of our two DoH resolvers tries first.
+// Which of our two resolvers the value's own hint asks for, or null to keep the normal order.
+// The hint is written in THREE shapes by the panels this idea came from, and all three are
+// recognised so a pasted value is never silently ignored:
+//   udp://8.8.8.8                        (cfnew, and our documented form)
+//   udp://dns.google                     (a bare resolver hostname)
+//   https://dns.google/dns-query         (Nova's URL form)
+// Only these two resolvers exist in ECH_DOH_RESOLVERS, so this can reorder them but never
+// introduce a third -- a crafted hint cannot point the lookup at somebody else's server.
+function resolverNameForHost(host) {
+	// Strip an optional port, and the brackets IPv6 arrives in.
+	const h = String(host || "").toLowerCase().replace(/^\[|\]$/g, "").replace(/:\d+$/, "").replace(/\.$/, "");
+	if (!h) return null;
+	// Cloudflare's resolvers, by address or by hostname.
+	if (h === "1.1.1.1" || h === "1.0.0.1" || h.startsWith("2606:4700:4700:")) return "cloudflare-dns";
+	if (/(^|\.)cloudflare-dns\.com$/.test(h) || /(^|\.)mozilla\.cloudflare\.com$/.test(h)) return "cloudflare-dns";
+	// Google's, likewise.
+	if (h === "8.8.8.8" || h === "8.8.4.4" || h.startsWith("2001:4860:4860:")) return "dns.google";
+	if (/(^|\.)dns\.google$/.test(h)) return "dns.google";
+	return null;
+}
 function preferredEchResolver(hint) {
 	if (!hint) return null;
-	if (/1\.1\.1\.1|1\.0\.0\.1|2606:4700:4700:/.test(hint)) return "cloudflare-dns";
-	if (/8\.8\.8\.8|8\.8\.4\.4|2001:4860:4860:/.test(hint)) return "dns.google";
-	return null;
+	const h = String(hint).trim().toLowerCase();
+	// A URL hint: take its hostname and match that.
+	const url = h.match(/^[a-z][a-z0-9+.\-]*:\/\/([^/?#\s]+)/);
+	if (url) return resolverNameForHost(url[1]);
+	// An address or a bare hostname: the whole hint is the host.
+	return resolverNameForHost(h);
 }
 function echResolverOrder(hint) {
 	const want = preferredEchResolver(hint);

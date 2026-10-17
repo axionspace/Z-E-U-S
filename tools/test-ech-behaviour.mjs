@@ -40,7 +40,7 @@ const echBlock = build.slice(start, end + endMarker.length);
 const mod = [
   tlsMatch[0],
   echBlock,
-  'export { fetchEchConfig, resolveEch, echDomainFor, echValueFor, parseEchValue, preferredEchResolver, ECH_BUILD_CACHE, ECH_DEFAULT_DOMAIN, ECH_DEFAULT_HOST, TLS_PORTS };',
+  'export { fetchEchConfig, resolveEch, echDomainFor, echValueFor, parseEchValue, preferredEchResolver, echResolverOrder, ECH_BUILD_CACHE, ECH_DEFAULT_DOMAIN, ECH_DEFAULT_HOST, TLS_PORTS };',
 ].join('\n\n');
 const dir = mkdtempSync(join(tmpdir(), 'zeus-ech-'));
 const f = join(dir, 'ech.mjs');
@@ -98,7 +98,10 @@ ok(ech.echDomainFor({ ech: 1, ech_domain: '  ' }) === ech.ECH_DEFAULT_HOST, 'an 
 ok(ech.echDomainFor({ ech: 1, ech_domain: 'Crypto.CloudFlare.com' }) === 'crypto.cloudflare.com', 'the ECH domain is normalised to lowercase');
 // The default is a directive ("host+udp://dns"). Only the HOST half may ever be emitted as
 // SNI, or every generated config would carry a string that is not a hostname.
-ok(ech.ECH_DEFAULT_DOMAIN.includes('+'), 'the built-in default carries a resolver hint');
+// The built-in default is now the HOSTNAME ALONE: the field reads as a domain, and a user
+// who just ticks the box never has to understand the "+..." syntax.
+ok(ech.ECH_DEFAULT_DOMAIN === 'cloudflare-ech.com', 'the built-in default is a bare hostname, not a directive', ech.ECH_DEFAULT_DOMAIN);
+ok(!ech.ECH_DEFAULT_DOMAIN.includes('+'), 'the default carries no resolver hint for a user to puzzle over');
 ok(ech.echDomainFor({ ech: 1, ech_domain: '' }) === 'cloudflare-ech.com', 'the default resolves to the bare hostname for SNI', ech.echDomainFor({ ech: 1, ech_domain: '' }));
 ok(!ech.echDomainFor({ ech: 1, ech_domain: 'x.example.com+udp://1.1.1.1' }).includes('+'), 'a directive value yields a bare hostname for SNI');
 
@@ -123,9 +126,9 @@ ok(!ech.ECH_BUILD_CACHE.has(DEFAULT_KEY), 'a failed lookup is NOT cached');
 mockDoh({ googleOk: true }); // the network comes back
 const recovered = await ech.resolveEch({ ech: 1, ech_domain: '' });
 ok(!!recovered && !!recovered.config, 'the very next build recovers once the lookup works again', recovered && recovered.config);
-// The default's hint asks Cloudflare first, so Google succeeding needs two attempts.
+// With no hint the normal order runs, so Google is asked first and answers on the first try.
 ok(calls.length >= 1 && calls.length <= 2, 'the recovery really retried (fresh lookups, not a reused failure)', calls.length + ' calls');
-ok(calls.some((c) => c.url.includes('cloudflare-dns')), 'the retry honoured the default hint (Cloudflare first)');
+ok(calls[0] && calls[0].url.includes('dns.google'), 'the retry used the normal order (Google first)', calls[0] && calls[0].url);
 // ...and a SUCCESS is still cached, so the retry does not become a fetch on every build.
 const goodBefore = calls.length;
 await ech.resolveEch({ ech: 1, ech_domain: '' });
@@ -190,9 +193,22 @@ ok(ech.preferredEchResolver('udp://1.1.1.1') === 'cloudflare-dns', 'a Cloudflare
 ok(ech.preferredEchResolver('udp://8.8.8.8') === 'dns.google', 'a Google resolver hint selects Google first');
 ok(ech.preferredEchResolver('udp://9.9.9.9') === null, 'an unknown resolver falls back to the normal order');
 ok(ech.preferredEchResolver('') === null, 'a missing hint falls back to the normal order');
-// The built-in default is the directive form, and it must still produce a usable SNI.
-ok(ech.ECH_DEFAULT_DOMAIN === 'cloudflare-ech.com+udp://1.1.1.1', 'the built-in default is cloudflare-ech.com+udp://1.1.1.1', ech.ECH_DEFAULT_DOMAIN);
-ok(ech.echDomainFor({ ech: 1, ech_domain: '' }) === 'cloudflare-ech.com', 'the default yields the bare hostname, not the directive');
+// THREE hint shapes are written by the panels this idea came from, and all three must be
+// honoured -- accepting a value and then ignoring it is worse than refusing it outright.
+ok(ech.preferredEchResolver('udp://dns.google') === 'dns.google', 'a bare resolver hostname is honoured');
+ok(ech.preferredEchResolver('https://dns.google/dns-query') === 'dns.google', "Nova's URL form is honoured (Google)");
+ok(ech.preferredEchResolver('https://cloudflare-dns.com/dns-query') === 'cloudflare-dns', "Nova's URL form is honoured (Cloudflare)");
+ok(ech.preferredEchResolver('https://mozilla.cloudflare.com/dns-query') === 'cloudflare-dns', "Cloudflare's alternate DoH host is honoured");
+ok(ech.preferredEchResolver('1.1.1.1:443') === 'cloudflare-dns', 'an address carrying a port is honoured');
+ok(ech.preferredEchResolver('https://dns.alidns.com/dns-query') === null, 'a resolver we do not carry falls back to the normal order (never added)');
+// End to end: what the user types must actually change which resolver runs first.
+ok(ech.echResolverOrder('udp://8.8.8.8')[0].name === 'dns.google', 'typing 8.8.8.8 really makes Google run first');
+ok(ech.echResolverOrder('udp://1.1.1.1')[0].name === 'cloudflare-dns', 'typing 1.1.1.1 really makes Cloudflare run first');
+ok(ech.echResolverOrder('https://dns.google/dns-query')[0].name === 'dns.google', "Nova's URL hint really makes Google run first");
+ok(ech.echResolverOrder('')[0].name === 'dns.google', 'no hint keeps the normal Google-first order');
+// The built-in default is the bare hostname and must still produce a usable SNI.
+ok(ech.ECH_DEFAULT_DOMAIN === 'cloudflare-ech.com', 'the built-in default is cloudflare-ech.com', ech.ECH_DEFAULT_DOMAIN);
+ok(ech.echDomainFor({ ech: 1, ech_domain: '' }) === 'cloudflare-ech.com', 'the default yields the bare hostname');
 
 // ALPN is a comma-separated list; one bad entry rejects the whole field rather than
 // silently dropping part of it.

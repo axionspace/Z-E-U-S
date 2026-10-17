@@ -36,10 +36,11 @@ const checks = [
   ['dns.google/resolve', 'Google DoH is the first resolver'],
   ['cloudflare-dns.com/dns-query', 'Cloudflare DoH is the fallback'],
   ['cloudflare-ech.com', 'the default ECH host is embedded'],
-  // The default is the directive form; the host is built from ECH_DEFAULT_HOST so both
-  // halves must survive hardening.
+  // The default is the bare hostname; the resolver hint is optional and comes from the
+  // user, so what must survive hardening is the constant and the hint-recognition code.
   ['ECH_DEFAULT_HOST', 'the default host constant is embedded'],
-  ['+udp://1.1.1.1', 'the default resolver hint is embedded'],
+  ['resolverNameForHost', 'the resolver-hint recognition is embedded'],
+  ['dns.google', 'a recognised resolver hostname is embedded'],
   ['ECH_BUILD_CACHE', 'the per-build cache exists'],
   ['const tlsOnly = ports.filter((p) => TLS_PORTS.has(p));', 'ECH forces TLS-only ports'],
   ['{ name: "ech", def: "INTEGER DEFAULT 0" },', 'the ECH column migration exists'],

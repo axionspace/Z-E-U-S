@@ -8,17 +8,24 @@
 # ------------------------------------------------------------------ how it works
 #
 # * One toggle per user, in the «پورت‌های اتصال و شبکه» tab («رمزنگاری سلام کلاینت (ECH)»),
-#   with an optional ECH-domain field (default `cloudflare-ech.com+udp://1.1.1.1`) and an
-#   optional ALPN field. Blank ALPN means "let the client negotiate", which is recommended.
+#   with an optional ECH-domain field (default `cloudflare-ech.com`) and an optional ALPN
+#   field. Blank ALPN means "let the client negotiate", which is recommended.
 #
-# * The field takes two shapes. A bare hostname (`crypto.cloudflare.com`) is looked up and
-#   emitted as-is. The directive form (`cloudflare-ech.com+udp://1.1.1.1`) is the shape Xray
-#   and Hiddify use: the part before `+` is the host, and the part after names the resolver
-#   to read the config from. This panel performs the DoH lookup itself, so the hint decides
-#   which of our two resolvers tries first (1.1.1.1/1.0.0.1 -> Cloudflare, 8.8.8.8/8.8.4.4
-#   -> Google). It cannot add a resolver, only reorder the fixed pair. Everything that goes
-#   into a generated config as SNI (`query-server-name`, `server_name`, `sni`) is the
-#   hostname ALONE — the full directive is not a valid SNI.
+# * The default is the HOSTNAME ALONE, so the field reads as a domain and a user who just
+#   ticks the box never has to understand the "+..." syntax. The field still accepts two
+#   shapes. A bare hostname is looked up and emitted as-is. The directive form
+#   (`cloudflare-ech.com+udp://8.8.8.8`) is the shape Xray, Hiddify, BPB and cfnew use: the
+#   part before `+` is the host, and the part after names the resolver to read the config
+#   from. This panel performs the DoH lookup itself, so the hint decides which of our two
+#   resolvers tries first. It cannot add a resolver, only reorder the fixed pair. Everything
+#   that goes into a generated config as SNI (`query-server-name`, `server_name`, `sni`) is
+#   the hostname ALONE — the full directive is not a valid SNI.
+#
+# * Three hint shapes are recognised, because three panels write them and a value that is
+#   accepted but then ignored is worse than one refused: `udp://8.8.8.8` (cfnew and ours),
+#   `udp://dns.google` (a bare resolver hostname), and `https://dns.google/dns-query`
+#   (Nova's URL form). Matching is on the resolver, not the syntax, and a port or a trailing
+#   dot is tolerated. An unrecognised resolver keeps the normal Google-then-Cloudflare order.
 #
 # * Both fields are validated server-side on save, on both write paths (create and edit).
 #   A bad domain or a malformed ALPN list is refused with a 400 and nothing is written, so a
