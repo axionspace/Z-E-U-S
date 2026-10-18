@@ -156,25 +156,59 @@ function echDomainFor(user) {
 	const parsed = parseEchValue(echValueFor(user));
 	return parsed ? parsed.host : ECH_DEFAULT_HOST;
 }
+// Why the last lookup failed, in words a person can act on. Set by fetchEchConfig and read by
+// echDiagnostics, which the subscription routes turn into response headers.
+// Kept deliberately simple: each resolver either answered with a usable record, answered
+// without one, or could not be reached. The first two are what a user can act on.
+let ECH_LAST_REASON = "";
 async function fetchEchConfig(domain, dnsHint) {
 	// The host is what is looked up; the hint only decides which resolver asks first.
+	let answered = false, unreachable = false, errored = false;
+	ECH_LAST_REASON = "";
 	for (const res of echResolverOrder(dnsHint)) {
 		try {
 			const r = await fetch(res.url(domain), {
 				headers: { Accept: "application/dns-json" },
 				signal: AbortSignal.timeout(ECH_FETCH_TIMEOUT_MS),
 			});
-			if (!r.ok) continue;
+			if (!r.ok) { errored = true; continue; }
+			answered = true;
 			const j = await r.json();
-			if (j && j.Status !== 0 && j.Status !== undefined) continue;
-			const answers = (j && j.Answer) || [];
+			const answers = (j && j.Status === 0) ? (j.Answer || []) : [];
 			for (const a of answers) {
 				const m = String(a && a.data || "").match(/ech=([A-Za-z0-9+/=]+)/);
 				if (m) return { config: m[1], resolver: res.name };
 			}
-		} catch (e) { }
+		} catch (e) {
+			unreachable = true;
+		}
 	}
+	// A resolver that answered without an ech= parameter is the actionable case: the domain
+	// exists but publishes no ECH config, so no amount of retrying will help.
+	ECH_LAST_REASON = answered
+		? "no HTTPS record with an ech= parameter for " + domain
+		: unreachable ? "no DoH resolver reachable within " + ECH_FETCH_TIMEOUT_MS + "ms"
+		: errored ? "the DoH resolvers answered with an error"
+		: "the ECH lookup failed";
 	return null;
+}
+// A one-call summary the route layer attaches to the response. Reading it never triggers a
+// lookup of its own: it reports on the lookup the builder already performed.
+function echDiagnostics(user) {
+	if (!user) return { status: "OFF" };
+	const clientMode = !!clientEchValue(user);
+	const serverMode = !!user.ech;
+	if (!serverMode && !clientMode) return { status: "OFF" };
+	if (clientMode) {
+		// Client mode does no lookup here by design: the client resolves it, so there is no
+		// server-side status to report beyond the fact that the value was emitted.
+		return { status: "CLIENT", mode: "client", value: clientEchValue(user) };
+	}
+	const info = ECH_BUILD_CACHE.get(echValueFor(user));
+	if (info && info.config) {
+		return { status: "SUCCESS", mode: "server", domain: info.domain, resolver: info.resolver, length: info.config.length };
+	}
+	return { status: "FAILED", mode: "server", reason: ECH_LAST_REASON || "the ECH lookup did not succeed" };
 }
 // A domain that goes into a DNS lookup and then into the user's subscription link must be a
 // domain. Without this, whatever was typed (a URL, an IP, a sentence, a Cyrillic homoglyph)
@@ -850,9 +884,32 @@ const Router = {
 			try {
 				USER_REQ_CACHE.set(user.username, (USER_REQ_CACHE.get(user.username) || 0) + 1);
 			} catch (e) { }
-			if (isYamlPath) return await SubscriptionService.generateYaml(user, host);
-			if (isSingsPath) return await SubscriptionService.generateSingsResponse(user, host);
-			return await SubscriptionService.generateText(user, host);
+			// Attach ECH diagnostics as response headers so a user can see, from their browser's
+			// network tab, whether ECH was applied to this subscription and why not if it was not.
+			// This only ADDS headers; the body, status and every existing header are untouched.
+			const withEchHeaders = (resp) => {
+				try {
+					const diag = echDiagnostics(user);
+					const h = new Headers(resp.headers);
+					h.set("X-ECH-Status", diag.status);
+					if (diag.mode) h.set("X-ECH-Mode", diag.mode);
+					if (diag.status === "SUCCESS") {
+						h.set("X-ECH-Domain", diag.domain || "");
+						h.set("X-ECH-Resolver", diag.resolver || "");
+						h.set("X-ECH-Config-Length", String(diag.length || 0));
+					} else if (diag.status === "FAILED") {
+						h.set("X-ECH-Debug", diag.reason || "lookup failed");
+					}
+					return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: h });
+				} catch (e) {
+					// Diagnostics must never break a subscription: if anything here throws, the
+					// original response goes out untouched.
+					return resp;
+				}
+			};
+			if (isYamlPath) return withEchHeaders(await SubscriptionService.generateYaml(user, host));
+			if (isSingsPath) return withEchHeaders(await SubscriptionService.generateSingsResponse(user, host));
+			return withEchHeaders(await SubscriptionService.generateText(user, host));
 		} catch (err) {
 			return new Response("Error building config: " + err.message, { status: 500 });
 		}

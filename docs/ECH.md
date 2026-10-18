@@ -71,6 +71,30 @@
 #   node tools/test-ech-hardening.mjs  # static: the feature survived the hardening round-trip
 #   node tools/test-ech-behaviour.mjs  # runtime: fetch order, timeout, cache, validation, both value shapes
 #   node tools/test-ech-client.mjs     # client mode: the raw form, and the mutual exclusion
+#   node tools/test-ech-diagnostics.mjs # the response headers, and that they can never break a subscription
+
+# ------------------------------------------------------------------ diagnostics
+#
+# The subscription routes (/sub/, /yaml/, /sings/) return three headers so a user can open
+# their browser's network tab and see what ECH actually did:
+#
+#   X-ECH-Status:        OFF | CLIENT | SUCCESS | FAILED
+#   X-ECH-Mode:          server | client
+#   X-ECH-Config-Length: the base64 length, on SUCCESS
+#   X-ECH-Domain / X-ECH-Resolver: what was looked up and who answered, on SUCCESS
+#   X-ECH-Debug:         the reason, on FAILED
+#
+# The reason distinguishes the two cases that need different action: "no HTTPS record with an
+# ech= parameter for <domain>" means the domain simply publishes no ECH config and retrying is
+# pointless, while "no DoH resolver reachable within 4000ms" is transient and will clear.
+#
+# The wrapper only ADDS headers: the body, the status and every existing header are passed
+# through untouched, and if the diagnostics themselves throw, the original response goes out
+# unmodified. A failed lookup still delivers a working subscription — it just says so.
+#
+# Note the headers travel on the subscription URL, which the user shares with their client.
+# Anyone holding that link can read them. They carry no secret (a status, a hostname, a
+# length), but it is a deliberate choice, not an oversight.
 #   node tools/live-ech-check.mjs     # live, against a real deployment
 #
 # All three are offline-safe except the last one, which needs `ZEUS_CF_TOKEN` in the
