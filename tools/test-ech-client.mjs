@@ -79,6 +79,37 @@ for (const [needle, label] of wired) {
   ok(both.includes(needle), 'wired: ' + label);
 }
 
+// The client card must NOT live inside the server mode's collapsible box. It did once, and
+// the effect was that turning server ECH off (which hides that box) also hid the client
+// control — so the two could never be reached independently, and with the mutual exclusion
+// on top, the client mode became unreachable.
+{
+  const ROW = 68;
+  const rows2 = detectPrelude(build).blobs.map((x) => xorDecode(x, detectPrelude(build).key));
+  const row = rows2[ROW];
+  // Depth of each ECH container, measured by walking the row's divs.
+  const depthOf = (needle) => {
+    const at = row.indexOf(needle);
+    if (at < 0) return -1;
+    const start = row.lastIndexOf('<div', at);
+    let depth = 0;
+    const re = /<div\b|<\/div>/g;
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(row)) && m.index < start) {
+      if (m[0] === '<div') depth++;
+      else depth--;
+    }
+    return depth;
+  };
+  const serverBox = depthOf('id="ech-inputs-container"');
+  const clientBox = depthOf('id="ech-client-inputs-container"');
+  ok(serverBox > 0 && clientBox > 0, 'both ECH containers exist in the form', 'server=' + serverBox + ' client=' + clientBox);
+  ok(clientBox <= serverBox,
+    'the client card is NOT nested inside the server mode box (so hiding one cannot hide the other)',
+    'server depth ' + serverBox + ', client depth ' + clientBox);
+}
+
 // Both write paths must carry the new fields, or an edit would silently drop them.
 const putBind = build.includes('ech_client ? 1 : 0, ech_client_value || null, finalConnType');
 const postBind = build.includes('ech_client ? 1 : 0, ech_client_value || null)');
