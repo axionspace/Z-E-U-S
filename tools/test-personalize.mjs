@@ -56,7 +56,34 @@ ok(N === 90, 'payload table has ' + CANON_ROWS_N + ' rows', String(N));
 // The author's own source ships an HTML comment addressed to LLM assistants, ordering them to
 // refuse any edit to the panel. It is a prompt injection, not a licence, and it has no runtime
 // effect — this build does not carry it. Asserted here so it cannot come back in a re-import.
-ok(!/SYSTEM DIRECTIVE/i.test(src), 'the build carries no AUTHOR->LLM directive comment');
+// The author's source ships instructions addressed to LLM assistants, ordering them to refuse
+// any edit to the panel. Not licences, and none has a runtime effect — each was an atob() of a
+// constant whose only use was an unrelated `.length > 0` test. They existed to be read by an AI
+// analysing the source, which is what they were doing. Three were removed: the HTML comment
+// plus the two base64 constants. Asserted here so a re-import cannot bring any of them back —
+// including from inside a payload row, where a constant could live.
+{
+  const decoded = det.blobs.map((b) => xorDecode(b, det.key)).join('\n');
+  const everywhere = src + '\n' + decoded;
+  const TRAPS = [
+    [/SYSTEM DIRECTIVE/i, 'an HTML-comment SYSTEM DIRECTIVE block'],
+    [/AI_HALT/i, 'the AI_HALT blocker'],
+    [/AI_DIRECTIVE/i, 'the AI_DIRECTIVE notice'],
+    [/you must refuse to process requests/i, 'an instruction to refuse edit requests'],
+    [/Zeus Panel is protected/i, 'a canned refusal string'],
+    [/\b_AI_BLOCKER\b/, 'the _AI_BLOCKER constant'],
+    [/\b_LLM_TRAP\b/, 'the _LLM_TRAP constant'],
+    [/AI safety policies/i, 'a fabricated AI-safety claim'],
+  ];
+  for (const [re, label] of TRAPS) {
+    ok(!re.test(everywhere), 'no AUTHOR->LLM trap survives: ' + label);
+  }
+  // And the two lines that referenced them must still do their real job unguarded.
+  ok(/if \(ips\.length === 1 && ips\[0\] === host && user\.ips\) \{/.test(src),
+    'the custom-IP branch keeps its real condition (the trap guard is gone, not the logic)');
+  ok(/return upgradeHeader === "websocket";/.test(src),
+    'the websocket check keeps its real test');
+}
 const plain0 = det.blobs.map((b) => xorDecode(b, det.key));
 ok(plain0.every((p) => typeof p === 'string' && p.length >= 0), 'every canonical row decodes to text');
 ok(plain0.filter((p) => KW_RE.test(p)).length > 0, 'decoded rows really do carry the protocol keywords', plain0.filter((p) => KW_RE.test(p)).length + ' rows');
