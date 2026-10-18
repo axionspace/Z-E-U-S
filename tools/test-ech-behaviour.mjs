@@ -225,13 +225,14 @@ ok(V.alpnProblem('1,2,3,4,5,6,7,8,9') !== null, 'an absurd number of ALPN entrie
 // the guard is wired into BOTH write paths: PUT (edit) and POST (create)
 const guardCalls = (build.match(/validateEchFields\(/g) || []).length;
 ok(guardCalls === 3, 'both user write paths call the guard (1 definition + 2 call sites)', guardCalls + ' sites');
+const GUARD_CALL = 'validateEchFields(ech, ech_domain, alpn, ech_client, ech_client_value)';
 const putIdx = build.indexOf('const { username: new_username, limit_gb');
 const postIdx = build.indexOf('const { username, uuid, limit_gb');
-ok(putIdx !== -1 && build.indexOf('validateEchFields(ech, ech_domain, alpn)', putIdx) !== -1 &&
-   build.indexOf('validateEchFields(ech, ech_domain, alpn)', putIdx) - putIdx < 4000,
+ok(putIdx !== -1 && build.indexOf(GUARD_CALL, putIdx) !== -1 &&
+   build.indexOf(GUARD_CALL, putIdx) - putIdx < 4000,
   'the PUT (edit user) path validates before its bind');
-ok(postIdx !== -1 && build.indexOf('validateEchFields(ech, ech_domain, alpn)', postIdx) !== -1 &&
-   build.indexOf('validateEchFields(ech, ech_domain, alpn)', postIdx) - postIdx < 2000,
+ok(postIdx !== -1 && build.indexOf(GUARD_CALL, postIdx) !== -1 &&
+   build.indexOf(GUARD_CALL, postIdx) - postIdx < 2000,
   'the POST (create user) path validates before its bind');
 
 rmSync(dir, { recursive: true, force: true });

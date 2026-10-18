@@ -31,10 +31,21 @@
 #   A bad domain or a malformed ALPN list is refused with a 400 and nothing is written, so a
 #   user's other edits are never half-applied.
 #
-# * The setting lives in three new `users` columns — `ech`, `ech_domain`, `alpn`. They are
-#   added by the panel's existing runtime migration (`ALTER TABLE users ADD COLUMN …`), which
-#   only adds what is missing, so **every existing row keeps every value it already has** and
-#   every existing user continues to work with ECH off.
+# * There is a SECOND, independent ECH control beside it — «ECH کلاینتی», the way the main Zeus
+#   panel works. It stores a raw value in `ech_client_value` and emits that value UNCHANGED into
+#   `&ech=`, leaving SNI at the worker domain, so the CLIENT resolves the config itself. Server
+#   mode instead resolves it here and emits base64. Both write the same link parameter, so a
+#   client keeps whichever it parses first and silently drops the other — the two are therefore
+#   mutually exclusive: turning one on turns the other off immediately in the UI, and the server
+#   refuses a row that holds both (`400`, nothing written) because a client-side rule alone can
+#   be bypassed with a direct API call. In the YAML and JSON cores both modes express the same
+#   thing, since those take an ECH server NAME rather than a config: the hostname half.
+#
+# * The setting lives in five `users` columns — `ech`, `ech_domain`, `alpn`, `ech_client`,
+#   `ech_client_value`. They are added by the panel's existing runtime migration
+#   (`ALTER TABLE users ADD COLUMN …`), which only adds what is missing, so **every existing
+#   row keeps every value it already has** and every existing user continues to work with ECH
+#   off.
 #
 # * The ECHConfig itself is fetched from DoH **on every subscription build** — Google DNS
 #   first, Cloudflare DNS as the fallback — with a bounded timeout, and cached only for the
@@ -42,7 +53,7 @@
 #   that belongs to their settings, and a user who does not use ECH causes **no network call
 #   at all**.
 #
-# * Turning ECH on forces the generated links onto **TLS ports only** — the same rule in all
+#   Server mode forces the generated links onto **TLS ports only** — the same rule in all
 #   three output formats — so a plaintext link can never appear next to an ECH link.
 #
 # ------------------------------------------------------------ what each client gets
@@ -59,6 +70,7 @@
 #
 #   node tools/test-ech-hardening.mjs  # static: the feature survived the hardening round-trip
 #   node tools/test-ech-behaviour.mjs  # runtime: fetch order, timeout, cache, validation, both value shapes
+#   node tools/test-ech-client.mjs     # client mode: the raw form, and the mutual exclusion
 #   node tools/live-ech-check.mjs     # live, against a real deployment
 #
 # All three are offline-safe except the last one, which needs `ZEUS_CF_TOKEN` in the
