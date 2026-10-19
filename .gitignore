@@ -41,3 +41,8 @@ Thumbs.db
 
 # --- working folders the wizard/tools create ------------------------------------
 .runtime/
+
+# Decoded payload rows and the scripts that re-encode them. The rows are the panel's HTML
+# and JavaScript in the clear — publishing them would hand back exactly what the XOR table
+# exists to hide. Never stage this folder, not even by accident.
+.scratch/
