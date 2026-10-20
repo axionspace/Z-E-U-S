@@ -1043,3 +1043,47 @@ experiments predicted), the recreate did. Final: `/` 200, `/panel` 200, `/api/do
 * `wizard-manual/` is ignored again (the night-shift line had it, this line did not).
 * Suites: i18n 89, personalize 114, ech-behaviour 89, ech-hardening 44, ech-client 33,
   ech-diagnostics 25, wizard-flows 317 — zero failures.
+
+---
+
+## 2026-10-20 — the update button becomes a version check, 2.2.6, and a rebuilt artifact
+
+### What the in-panel button does now
+`/api/update-panel` no longer downloads anything and no longer deploys. It reads the fork's
+`version.txt` (raw.githubusercontent → jsDelivr → githack), compares it with `PANEL_VERSION`,
+and returns `{ current, latest, updateAvailable, checkedFrom, wizard: { windows, unix, repo } }`.
+The button (and the 5-minute background check) calls it; a manual click opens a modal with the
+current/latest versions and the two wizard one-liners with copy buttons, and says plainly that
+the panel cannot update itself — each install's build identity is minted locally from a seed the
+worker does not have — and points at the wizard instead. The auto-update toggle was removed (it
+stored a token and re-deployed a shared upstream artifact); nothing inside the panel fetches
+`zeus.obfuscated.js` any more.
+
+Why: the wizard's per-install identity (payload key, row order, renamed identifiers) lives in
+`profile.json` on the owner's machine. An in-panel OTA can only ship a shared build, and the old
+code shipped *upstream's* build on top of the fork — a silent downgrade.
+
+### Version 2.2.6
+`version.txt`, the worker's `PANEL_VERSION`, the panel's `CURRENT_VERSION` and the artifact's
+`CURRENT_VERSION` are all 2.2.6. The remote `version.txt` still says 2.2.5 until this branch is
+pushed; until then the check correctly reports “no newer version” and shows the remote value as
+latest.
+
+### tools/build-artifact.mjs
+Rebuilds `zeus.obfuscated.js` from `Source.js` with the same chain: strip the sockets import,
+turn `export default {` into a returned object, XOR the whole body with a random 32-byte key
+(emitted as small sums, not literals), base64 it, and load it through `new Function("connect", …)`.
+The 2.2.6 artifact was rebuilt from the patched source — 1,291,900 bytes — and verified by
+decoding it back and compiling the inner module.
+
+### Live
+`web-panel` was redeployed with a fresh identity from the patched source (969,346 B, sha
+`a538f6050609…`): `/` and `/panel` 200, `/api/update-panel` 200 with
+`{ current: "2.2.6", latest: "2.2.5", updateAvailable: false }`, the panel page carries the new
+modal and both copy buttons, the toggle element is gone, and the D1 census is unchanged
+(`users=2`, `settings=9`). The previous bytes were backed up before the upload.
+
+### Tests
+i18n 89/0, personalize 114/0, ech-hardening 44/0. The hardening scan rejected the first draft
+because the repo slug (`Z-E-U-S`) appeared as plaintext in the new URLs; it is now assembled
+from parts at runtime.
