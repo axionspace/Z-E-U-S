@@ -107,6 +107,14 @@ function startMock(opt = {}) {
           res.writeHead(503, { 'content-type': 'text/plain' });
           return res.end('Cloudflare D1 Quota Exceeded');
         }
+        if (state.probeMode === 'flap') {
+          // Answers 200 for the first couple of reads, then the edge flips to a real 1101
+          // until the script is recreated. This is the live failure mode a two-read check
+          // signed off as success, leaving the panel broken with no heal attempted.
+          if (state.probeHits <= 2) return json(200, okEnv('up'));
+          if (!healed) { res.writeHead(500, { 'content-type': 'text/plain' }); return res.end('error code: 1101'); }
+          return json(200, okEnv('up'));
+        }
         if (state.probeMode === 'stuck') {
           res.writeHead(500, { 'content-type': 'text/plain' });
           return res.end('error code: 1101');
@@ -258,6 +266,13 @@ function run(dir, port, args, answers, extraEnv = {}) {
         ZEUS_PROBE_WAIT_MS: '3000',
         ZEUS_PROBE_INTERVAL_MS: '400',
         ZEUS_SETTLE_MS: '100',
+        ZEUS_STABLE_MS: '0',
+        // Pin the rendering mode: a plain Windows console (cmd/conhost, which is what a CI
+        // shell looks like) otherwise gets the CP437-safe ASCII transcoder, and the checks
+        // that assert the modern transcript (the dashboards arrow, the token mask) would
+        // fail for a reason that has nothing to do with the wizard. S30 turns classic back
+        // on explicitly by setting ZEUS_FORCE_CLASSIC.
+        ZEUS_FORCE_MODERN: '1',
         ...RUN_ENV,
         ...extraEnv,
       },
@@ -1155,6 +1170,24 @@ try {
     const rUp = await run(root, port, ['--update'], [TOKEN, '', '1', ''], { ZEUS_FORCE_CLASSIC: '1', WT_SESSION: '', TERM_PROGRAM: '', ConEmuANSI: '', TERM: 'cmd' });
     const upBad = [...new Set([...rUp.out].filter((ch) => ch.codePointAt(0) > 127))];
     check(!rUp.fatal && rUp.code === 0 && upBad.length === 0, 'S30 a full update is also pure ASCII on a classic console', JSON.stringify(upBad.join('')));
+    server.close();
+    console.log('');
+  }
+
+  // ------------------------------------------------------------------ S31 early 200 then 1101
+  console.log('• S31 an address that answers 200 briefly and then 1101 is not signed off');
+  {
+    cleanStore(); rmSync(profPath, { force: true });
+    const { server, state, port } = await startMock({ probeMode: 'flap' });
+    const r = await run(root, port, [], [TOKEN, '', 'n'], { ZEUS_STABLE_MS: '1200' });
+    check(!r.fatal && r.code === 0, 'S31 exit code 0 (got ' + r.code + ')', r.out && r.out.slice(-3000));
+    check(flat(r.out).includes('holding for'), 'S31 does not sign off on the first agreeing 200s', r.out.slice(-1500));
+    check(state.deletes.length === 1, 'S31 the early 200 still reached the self-heal', JSON.stringify(state.deletes));
+    check(state.puts.length === 3, 'S31 initial upload, re-upload, post-delete redeploy', 'PUTs=' + state.puts.length);
+    check(r.out.includes('Self-heal worked'), 'S31 reports the healed address as working');
+    const hold = r.out.indexOf('holding for'), heal = r.out.indexOf('Self-heal worked');
+    check(hold > -1 && heal > hold, 'S31 the stability gate really preceded the heal', 'hold=' + hold + ' heal=' + heal);
+    check(state.probeHits > 5, 'S31 probed the address repeatedly instead of once', 'hits=' + state.probeHits);
     server.close();
     console.log('');
   }

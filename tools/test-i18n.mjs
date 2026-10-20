@@ -131,8 +131,11 @@ ok(SRC.includes("langSetting = 'en'"), 'only English flips the server default');
 }
 
 // ---------------------------------------------------------------- static: every page parses
+// Compile each inline script in this process instead of shelling out to `node --check`:
+// vm.Script only parses, never runs, so it gives the same guarantee without depending on
+// a child process (a sandboxed or locked-down host can refuse the spawn, which used to
+// report every script as broken with an empty error).
 {
-  const dir = mkdtempSync(join(tmpdir(), 'zeus-i18n-'));
   let scripts = 0;
   const problems = [];
   for (const [name, html] of Object.entries(pages)) {
@@ -140,13 +143,10 @@ ok(SRC.includes("langSetting = 'en'"), 'only English flips the server default');
       if (/\bsrc\s*=/.test(m[1] || '')) continue;
       if (!m[2].trim()) continue;
       scripts++;
-      const f = join(dir, name + '-' + scripts + '.js');
-      writeFileSync(f, m[2]);
-      const r = spawnSync(process.execPath, ['--check', f], { encoding: 'utf8' });
-      if (r.status !== 0) problems.push(name + '#' + scripts + ': ' + (r.stderr || '').split('\n').slice(0, 2).join(' '));
+      try { new vm.Script(m[2], { filename: name + '#' + scripts }); }
+      catch (e) { problems.push(name + '#' + scripts + ': ' + String(e.message).split('\n')[0]); }
     }
   }
-  rmSync(dir, { recursive: true, force: true });
   ok(scripts > 20, 'extracted ' + scripts + ' inline scripts from the five pages');
   ok(problems.length === 0, 'every inline script parses', problems.join(' || ') || scripts + ' checked');
 }

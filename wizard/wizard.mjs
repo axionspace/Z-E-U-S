@@ -83,6 +83,9 @@ const KEYWORDS = ['vless','vmess','trojan','shadowsocks','v2ray','xray','hiddify
 const KW_RE = new RegExp(KEYWORDS.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
 
 let TOKEN = '';
+// The CLI sets TOKEN after its prompt. A tool that imports this module can hand the token
+// over through the environment instead, and every request still goes through one path.
+const apiToken = () => (TOKEN || process.env.ZEUS_CF_TOKEN || '').trim();
 let step = 0;
 let totalSteps = 10;
 
@@ -553,7 +556,7 @@ async function cf(path, { method = 'GET', body, headers = {}, raw = false } = {}
   try {
     res = await fetch(API + path, {
       method,
-      headers: { Authorization: `Bearer ${TOKEN}`, ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...headers },
+      headers: { Authorization: `Bearer ${apiToken()}`, ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...headers },
       body: typeof body === 'string' || body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(35000),
     });
@@ -1158,7 +1161,7 @@ async function deployedBytes(accountId, name) {
   let res;
   try {
     res = await fetch(`${API}/accounts/${accountId}/workers/scripts/${name}?include_source=true`, {
-      headers: { Authorization: `Bearer ${TOKEN}` },
+      headers: { Authorization: `Bearer ${apiToken()}` },
       signal: AbortSignal.timeout(120000),
     });
   } catch (e) {
@@ -1434,22 +1437,34 @@ async function verifyDeployment({ accountId, workerName, buildPath, dbId, dbName
   const base = probeBase(workerName, subdomain);
   const waitMs = Number(process.env.ZEUS_PROBE_WAIT_MS || 90000);
   const stepMs = Number(process.env.ZEUS_PROBE_INTERVAL_MS || 4000);
+  // A fresh deploy can answer 200 for several seconds before Cloudflare's edge flips it to
+  // 1101 (the live transcripts show 10-15s). Two agreeing reads four seconds apart sit
+  // inside that window, so a real 1101 was signed off as success and healed never ran.
+  // Success now has to *hold* for this long, with the address probed throughout.
+  const stableMs = Number(process.env.ZEUS_STABLE_MS || 20000);
   const deadline = Date.now() + waitMs;
   let last = null;
   let attempt = 0;
   let stableRounds = 0;
+  let stableSince = 0;
   for (;;) {
     attempt++;
     last = await probeOnce(base);
     const state = classifyProbe(last);
     if (state === 'ok') {
+      if (!stableSince) stableSince = Date.now();
       stableRounds++;
-      // Verify stability over 2 consecutive agreeing reads so a transient early 200 cannot fake success:
-      if (stableRounds >= 2) {
+      const heldFor = Date.now() - stableSince;
+      // Verify stability over a sustained window so a transient early 200 cannot fake success:
+      if (stableRounds >= 2 && heldFor >= stableMs) {
         log.log('  ✅ Panel address answers ' + last.status + ' ✔');
         return { ok: true, state: 'ok', healed: false, rebuilt: null };
       }
+      if (stableRounds === 2) {
+        console.log('     Address answered ' + last.status + ' — holding for ' + Math.max(1, Math.ceil((stableMs - heldFor) / 1000)) + 's to make sure the edge keeps it…');
+      }
     } else {
+      stableSince = 0;
       stableRounds = 0;
     }
     // Panel-side fatal errors trip immediately:

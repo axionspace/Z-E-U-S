@@ -46,3 +46,6 @@ Thumbs.db
 # and JavaScript in the clear — publishing them would hand back exactly what the XOR table
 # exists to hide. Never stage this folder, not even by accident.
 .scratch/
+
+# --- local-only experiments (never pushed, never committed) ----------------------
+wizard-manual/

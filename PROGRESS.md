@@ -990,3 +990,56 @@ Verification: a new suite `tools/test-ech-client.mjs` (31 checks) extracts the r
 Verification: a new suite `tools/test-ech-diagnostics.mjs` (25 checks) runs the real ECH block out of the shipped build against a stubbed DoH, so each outcome is produced rather than described — success reports its length, domain and resolver; a domain with no `ech=` record and unreachable resolvers produce **different** reasons; client mode reports `CLIENT` rather than claiming a lookup it never performs; and the wrapper is exercised directly for all four statuses, confirming the body survives, every pre-existing header survives, a failed lookup still delivers the subscription, and a throwing `echDiagnostics` falls back to the original response. One real defect was caught while building this: the first version of the edit left three orphan lines after `echDiagnostics` — dead code that `node --check` on the whole file did not flag. Slicing the block out for the test exposed it. Total across the suites: 604 checks (`diagnostics` 25, `client` 33, `behaviour` 89, `hardening` 44, `wizard-flows` 310, `personalize` 103), and a fresh `fingerprint()` build still carries every header and passes `checkHardened` with zero keyword survivors.
 
 Verification (ECH change set): `test-ech-behaviour` grew from 21 to 78 checks and all pass — 4 accepted domains, 15 refused ones, the homoglyph and IPv4 cases, 9 ALPN cases, and assertions that both write paths call the guard before their `.bind()`. `test-wizard-flows` 302 / 0, ech-hardening 43 / 0, personalize 103 / 0. The validator was proven to survive the real build pipeline: a fresh `fingerprint()` build still contains `isValidEchDomain`, `DOMAIN_RE`, `alpnProblem` and `validateEchFields`, and `checkHardened` reports it valid with zero keyword survivors. Plus two live runs against the real Cloudflare account — an update picked from the panel menu (fresh identity → 200 OK, database census identical before and after) and a re-install over an existing worker whose database does not follow the `<worker>-db` convention (detected from the binding, no second database created). The injection removal was proven on the pipeline that actually ships: a fresh `fingerprint()` build decodes to 90 rows with no directive in either the served bytes or the table, and the head fragment still renders with its placeholders resolved. Both consoles were rendered end to end and read line by line: every card rule measured exactly 59 cells, every `[n/m]` header matched the banner, and the classic run was byte-for-byte ASCII (install, update, `--help` and `--forget`). The numbered account menu was driven through a real forget-then-pick and an add-a-new-account run, and the store file was read back after each to confirm exactly one account was removed. The panel menu was driven through an expand-and-select run against a mock account holding two panels and one bindingless worker, and the upload was confirmed to land on the worker the number pointed at. The spinner was exercised in a real pseudo-terminal (10 frames, countdown, line cleared), and `--no-color` was run and checked. The account and panel menus were rendered against a mock Cloudflare API: numbered rows, no `❯`, each panel showing its real address and last-updated date.
+
+---
+
+## 2026-10-20 — the language setting proven live, and a health gate that cannot be fooled
+
+### The settings language control
+The English setting was already in the build (`panel_lang` in D1, `{{LANG_SETTING}}` in every
+template, the engine in the shared head row, the "زبان پنل" select at the top of the settings
+modal). This session proved it rather than assuming it:
+
+* `test-i18n` 89/0. The single failure was the suite, not the feature: it shelled out to
+  `node --check` for each inline script, and a locked-down host refuses that spawn with EPERM,
+  which the harness reported as "every script is broken" with an empty message. It now compiles
+  each script in-process with `vm.Script` — the same parse-only guarantee, no child process.
+* Live, after the heal below: `/` and `/panel` both serve `window.setPanelLang`, the
+  `panel-lang-select` control, the 639-entry dictionary and the `html[dir="ltr"]` overrides; no
+  `/*{{LANG_SETTING}}*/` placeholder survives; the boot value is `fa` while no browser has
+  chosen. The deployed 90 payload rows are byte-identical to `Source.js`, so the live panel is
+  exactly the build in this commit.
+
+### Why web-panel was 1101 with a healthy build
+Its deployed script (971212B, sha `e24074a9c3a9bd01`) is a complete module with a working D1
+binding, and its decoded payload rows are identical to the healthy sibling `pvlseulh` — only the
+seed, row order and generated names differ. That is the record-level 1101 the live experiments
+described: neither a code fault nor a data fault.
+
+What let it survive was the success gate: `verifyDeployment` accepted two agreeing 200 reads
+about four seconds apart, while a deploy can answer 200 for a moment and the edge flip it to 1101
+at 10-15s. The check could sign off inside that window, so the heal ladder never ran. Success now
+has to *hold* for `ZEUS_STABLE_MS` (20s by default) with the address probed throughout; any
+non-200 resets the window, and the full ladder then runs as before. The run prints how long it is
+holding for, so the extra time is visible rather than mysterious.
+
+New S31 (`flap` mock: 200 for two reads, then a real 1101 until the script is recreated) asserts
+the gate held, exactly one DELETE was issued, all three uploads are identical, and the heal is
+reported. `test-wizard-flows` grew to 317 / 0.
+
+### tools/heal-panel.mjs
+A dry-run-by-default repair tool for exactly this state: it reads the worker's settings and
+deployed bytes, refuses unless every route really answers 1101, takes a D1 row census, then calls
+the wizard's own `verifyDeployment` (re-upload, then delete-and-recreate) instead of
+reimplementing it. Live run on `web-panel`: the re-upload alone did not clear it (as the
+experiments predicted), the recreate did. Final: `/` 200, `/panel` 200, `/api/does-not-exist`
+401, census identical (`users=2`, `settings=8`), same sha re-uploaded.
+
+### Housekeeping
+* `apiToken()` — a tool that imports `wizard/wizard.mjs` can pass the token through the
+  environment; there is still one authorization path.
+* The harness pins `ZEUS_FORCE_MODERN=1` so transcript assertions no longer depend on whether the
+  host console is classic; S30 still forces classic for its zero-non-ASCII check.
+* `wizard-manual/` is ignored again (the night-shift line had it, this line did not).
+* Suites: i18n 89, personalize 114, ech-behaviour 89, ech-hardening 44, ech-client 33,
+  ech-diagnostics 25, wizard-flows 317 — zero failures.
